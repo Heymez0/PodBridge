@@ -1,0 +1,786 @@
+using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace PodBridge.Protocol;
+
+public enum SessionCloseReason
+{
+    /// <summary>Bizim isteğimizle kapandı.</summary>
+    Local,
+    /// <summary>Cihaz bağlantıyı düzgünce kapattı; genelde başka bir cihaz HomePod'u devraldı.</summary>
+    DeviceClosed,
+    /// <summary>Ağ hatası veya cihaz yanıt vermiyor.</summary>
+    Network,
+}
+
+public sealed class FirewallBlockedException(string message) : Exception(message);
+
+public sealed class PairingRejectedException(string message) : Exception(message);
+
+public sealed class RtspException(string step, int code) : Exception($"{step} reddedildi ({code})")
+{
+    public int Code { get; } = code;
+}
+
+public interface IPcmSource
+{
+    /// <summary>44100 Hz stereo 16 bit örneklerle doldurur. Ses yoksa sessizlik yazar, bloklamaz.</summary>
+    void Read(Span<short> interleaved);
+}
+
+public sealed record SessionOptions(
+    string ClientName,
+    string DeviceId,
+    int LatencyFrames);
+
+/// <summary>Tek bir AirPlay 2 gerçek zamanlı ses oturumu. Eşleştirme geçicidir (HAP transient),
+/// PIN veya kalıcı anahtar gerekmez. Protokol adımları için bkz. NOTICE.</summary>
+public sealed class AirPlaySession : IDisposable
+{
+    public const int SampleRate = 44100;
+    public const int FramesPerPacket = 352;
+    private const int Channels = 2;
+    private const int BacklogSize = 1024;
+    private const int RtpHeaderSize = 12;
+    private const int TagSize = 16;
+    private const int NonceSuffixSize = 8;
+    private const int MaxBurstPackets = 16;
+    private const int ResponseTimeoutMs = 8000;
+    private const string UserAgent = "AirPlay/550.10";
+    private const ulong NtpEpochOffset = 0x83AA7E80UL;
+
+    private static readonly int PayloadSize = Alac.FrameSize(FramesPerPacket * Channels);
+    private static readonly int PacketSize = RtpHeaderSize + PayloadSize + TagSize + NonceSuffixSize;
+
+    private readonly IPAddress _host;
+    private readonly int _port;
+    private readonly SessionOptions _options;
+    private readonly Action<string> _log;
+
+    private readonly TcpClient _control = new(AddressFamily.InterNetwork);
+    private NetworkStream? _controlStream;
+    private SecureFrames? _controlFrames;
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly Queue<TaskCompletionSource<RtspResponse>> _pending = new();
+    private readonly object _pendingLock = new();
+    private readonly MemoryStream _rxPlain = new();
+    private int _cseq;
+
+    private TcpClient? _event;
+    private SecureFrames? _eventFrames;
+
+    private readonly Socket _timingSocket = NewUdp();
+    private readonly Socket _controlSocket = NewUdp();
+    private readonly Socket _audioSocket = NewUdp();
+    private IPEndPoint? _remoteControl;
+    private int _timingRequests;
+
+    private readonly uint _sessionId = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
+    private readonly string _dacpId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+    private readonly uint _activeRemote = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
+    private readonly string _sessionUuid = Guid.NewGuid().ToString().ToUpperInvariant();
+    private string _localIp = "";
+    private byte[] _audioKey = [];
+
+    // Zaman tabanı: duvar saati bir kez okunur, sonrası monoton sayaçtan gelir.
+    // Windows saat eşitlemesi oturum ortasında zaman çizelgesini kaydıramaz.
+    private readonly long _baseTicks = Stopwatch.GetTimestamp();
+    private readonly ulong _baseNtp = ToNtp(DateTime.UtcNow);
+
+    private readonly CancellationTokenSource _stop = new();
+    private Thread? _audioThread;
+    private readonly byte[] _backlog = new byte[BacklogSize * PacketSize];
+    private readonly int[] _backlogSeq = new int[BacklogSize];
+    private readonly object _backlogLock = new();
+    private int _closed;
+
+    public event Action<SessionCloseReason, string>? Closed;
+
+    /// <summary>HomePod'un SETUP yanıtında bildirdiği, paket varışından sese kadar geçen süre.</summary>
+    public long? ReceiverLatencyMs { get; private set; }
+
+    public long PacketsSent => Volatile.Read(ref _packetsSent);
+    private long _packetsSent;
+    public long PacketsRetransmitted => Volatile.Read(ref _retransmitted);
+    private long _retransmitted;
+
+    public AirPlaySession(IPAddress host, int port, SessionOptions options, Action<string> log)
+    {
+        _host = host;
+        _port = port;
+        _options = options;
+        _log = log;
+        Array.Fill(_backlogSeq, -1);
+    }
+
+    private static Socket NewUdp()
+    {
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        socket.Bind(new IPEndPoint(IPAddress.Any, 0));
+        // Windows, ICMP "port kapalı" iletisini sonraki alımda hata olarak verir; kapatılır.
+        const int SioUdpConnReset = unchecked((int)0x9800000C);
+        socket.IOControl(SioUdpConnReset, [0], null);
+        return socket;
+    }
+
+    private static int PortOf(Socket socket) => ((IPEndPoint)socket.LocalEndPoint!).Port;
+
+    // ---------------------------------------------------------------- bağlantı
+
+    public async Task ConnectAsync(CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(6));
+        await _control.ConnectAsync(_host, _port, timeout.Token).ConfigureAwait(false);
+        _control.NoDelay = true;
+        _controlStream = _control.GetStream();
+        _localIp = ((IPEndPoint)_control.Client.LocalEndPoint!).Address.ToString();
+        _ = Task.Run(ReadControlLoop);
+        StartBackground(TimingLoop, "AirPlay zamanlama");
+        StartBackground(ControlLoop, "AirPlay kontrol");
+
+        await PairAsync().ConfigureAwait(false);
+
+        var info = await RtspAsync("GET", "/info").ConfigureAwait(false);
+        Require("GET /info", info);
+
+        var setup = await SetupSessionAsync().ConfigureAwait(false);
+        await OpenEventChannelAsync(setup).ConfigureAwait(false);
+
+        var record = await RtspAsync("RECORD", Uri).ConfigureAwait(false);
+        _log($"RECORD yanıtı: {record.Code}");
+
+        await SetupStreamAsync().ConfigureAwait(false);
+    }
+
+    private string Uri => $"rtsp://{_localIp}/{_sessionId}";
+
+    private async Task PairAsync()
+    {
+        var m2 = await PairPostAsync(Tlv8.Encode(
+            (Tlv8.Method, [0x00]), (Tlv8.State, [0x01]), (Tlv8.Flags, [0x10]))).ConfigureAwait(false);
+        if (m2.TryGetValue(Tlv8.Error, out var e1)) throw new PairingRejectedException($"M2 hata {e1[0]}");
+
+        var srp = new SrpClient();
+        if (!srp.Process("3939", m2[Tlv8.Salt], m2[Tlv8.PublicKey]))
+            throw new PairingRejectedException("Geçersiz SRP parametresi");
+
+        var m4 = await PairPostAsync(Tlv8.Encode(
+            (Tlv8.State, [0x03]), (Tlv8.PublicKey, srp.PublicA), (Tlv8.Proof, srp.ProofM1))).ConfigureAwait(false);
+        if (m4.TryGetValue(Tlv8.Error, out var e2)) throw new PairingRejectedException($"M4 hata {e2[0]}");
+        if (!m4.TryGetValue(Tlv8.Proof, out var proof) || !srp.VerifyServerProof(proof))
+            throw new PairingRejectedException("Cihazın eşleştirme kanıtı doğrulanamadı");
+
+        var secret = srp.SessionKey;
+        _audioKey = secret[..32];
+        _controlFrames = new SecureFrames(
+            Derive(secret, "Control-Salt", "Control-Write-Encryption-Key"),
+            Derive(secret, "Control-Salt", "Control-Read-Encryption-Key"));
+        // Olay kanalı ters yöndedir, bu yüzden okuma ve yazma anahtarları yer değiştirir.
+        _eventFrames = new SecureFrames(
+            Derive(secret, "Events-Salt", "Events-Read-Encryption-Key"),
+            Derive(secret, "Events-Salt", "Events-Write-Encryption-Key"));
+        _log("Eşleştirme tamam, kontrol kanalı şifreli");
+    }
+
+    private static byte[] Derive(byte[] secret, string salt, string info) =>
+        HKDF.DeriveKey(HashAlgorithmName.SHA512, secret, 32,
+                       Encoding.ASCII.GetBytes(salt), Encoding.ASCII.GetBytes(info));
+
+    private async Task<Dictionary<byte, byte[]>> PairPostAsync(byte[] body)
+    {
+        var response = await SendAsync("POST", "/pair-setup", "HTTP/1.1", "application/octet-stream", body,
+                                       ("Connection", "keep-alive"), ("X-Apple-HKP", "4")).ConfigureAwait(false);
+        if (response.Code is 403 or 470)
+            throw new PairingRejectedException(
+                $"HomePod eşleştirmeyi reddetti ({response.Code}). Ev uygulamasında " +
+                "Ev Ayarları > Hoparlörler ve TV > Erişime İzin Ver seçeneğini kontrol edin.");
+        Require("pair-setup", response);
+        return Tlv8.Decode(response.Body);
+    }
+
+    private async Task<Dictionary<string, object?>> SetupSessionAsync()
+    {
+        var body = BPlist.Encode(new Dictionary<string, object>
+        {
+            ["deviceID"] = _options.DeviceId,
+            ["sessionUUID"] = _sessionUuid,
+            ["timingPort"] = PortOf(_timingSocket),
+            ["timingProtocol"] = "NTP",
+            ["isMultiSelectAirPlay"] = true,
+            ["groupContainsGroupLeader"] = false,
+            ["macAddress"] = _options.DeviceId,
+            ["model"] = "iPhone14,3",
+            ["name"] = _options.ClientName,
+            ["osBuildVersion"] = "20F66",
+            ["osName"] = "iPhone OS",
+            ["osVersion"] = "16.5",
+            ["senderSupportsRelay"] = false,
+            ["sourceVersion"] = "690.7.1",
+            ["statsCollectionEnabled"] = false,
+        });
+
+        RtspResponse response;
+        try
+        {
+            response = await SendAsync("SETUP", Uri, "RTSP/1.0", "application/x-apple-binary-plist", body,
+                                       ("X-Apple-StreamID", "1")).ConfigureAwait(false);
+        }
+        catch (TimeoutException) when (Volatile.Read(ref _timingRequests) == 0)
+        {
+            // HomePod, yanıttan önce saat eşitlemesi ister. Bu istek hiç ulaşmadıysa suçlu güvenlik duvarıdır.
+            throw new FirewallBlockedException("HomePod'un zamanlama paketleri bilgisayara ulaşmıyor.");
+        }
+        Require("SETUP (oturum)", response);
+        var plist = BPlist.Decode(response.Body) as Dictionary<string, object?> ?? [];
+        _log($"Oturum SETUP tamam: {string.Join(", ", plist.Keys)}");
+        return plist;
+    }
+
+    private async Task OpenEventChannelAsync(Dictionary<string, object?> setup)
+    {
+        if (setup.GetValueOrDefault("eventPort") is not long eventPort || eventPort == 0) return;
+        _event = new TcpClient(AddressFamily.InterNetwork) { NoDelay = true };
+        await _event.ConnectAsync(_host, (int)eventPort).ConfigureAwait(false);
+        _ = Task.Run(ReadEventLoop);
+    }
+
+    private async Task SetupStreamAsync()
+    {
+        int latency = _options.LatencyFrames;
+        var body = BPlist.Encode(new Dictionary<string, object>
+        {
+            ["streams"] = new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["audioFormat"] = 0x40000,
+                    ["audioMode"] = "default",
+                    ["controlPort"] = PortOf(_controlSocket),
+                    ["ct"] = 2,
+                    ["isMedia"] = true,
+                    ["latencyMax"] = Math.Max(88200, latency),
+                    ["latencyMin"] = Math.Min(11025, latency),
+                    ["shk"] = _audioKey,
+                    ["spf"] = FramesPerPacket,
+                    ["sr"] = SampleRate,
+                    ["type"] = 0x60,
+                    ["supportsDynamicStreamID"] = false,
+                    ["streamConnectionID"] = (long)_sessionId,
+                },
+            },
+        });
+        RtspResponse response;
+        try
+        {
+            response = await SendAsync("SETUP", Uri, "RTSP/1.0", "application/x-apple-binary-plist", body,
+                                       ("X-Apple-StreamID", "1")).ConfigureAwait(false);
+        }
+        catch (TimeoutException) when (Volatile.Read(ref _timingRequests) == 0)
+        {
+            throw new FirewallBlockedException("HomePod'un zamanlama paketleri bilgisayara ulaşmıyor.");
+        }
+        Require("SETUP (akış)", response);
+
+        var plist = BPlist.Decode(response.Body) as Dictionary<string, object?>;
+        var stream = (plist?.GetValueOrDefault("streams") as List<object?>)?.FirstOrDefault() as Dictionary<string, object?>;
+        if (stream?.GetValueOrDefault("dataPort") is not long dataPort || dataPort == 0)
+            throw new IOException("HomePod veri portu bildirmedi");
+        long controlPort = stream.GetValueOrDefault("controlPort") as long? ?? dataPort;
+
+        _audioSocket.Connect(new IPEndPoint(_host, (int)dataPort));
+        _remoteControl = new IPEndPoint(_host, (int)controlPort);
+        ReceiverLatencyMs = stream.GetValueOrDefault("arrivalToRenderLatencyMs") as long?;
+        _log($"Akış SETUP tamam: veri={dataPort} kontrol={controlPort} cihaz gecikmesi={ReceiverLatencyMs} ms");
+    }
+
+    private static void Require(string step, RtspResponse response)
+    {
+        if (response.Code is < 200 or >= 300) throw new RtspException(step, response.Code);
+    }
+
+    // ---------------------------------------------------------------- RTSP
+
+    private sealed record RtspResponse(int Code, Dictionary<string, string> Headers, byte[] Body);
+
+    private Task<RtspResponse> RtspAsync(string method, string uri) =>
+        SendAsync(method, uri, "RTSP/1.0", null, null);
+
+    private async Task<RtspResponse> SendAsync(string method, string uri, string protocol, string? contentType,
+                                               byte[]? body, params (string Name, string Value)[] extra)
+    {
+        var head = new StringBuilder(256);
+        head.Append(method).Append(' ').Append(uri).Append(' ').Append(protocol).Append("\r\n");
+        head.Append("CSeq: ").Append(Interlocked.Increment(ref _cseq)).Append("\r\n");
+        head.Append("User-Agent: ").Append(UserAgent).Append("\r\n");
+        head.Append("DACP-ID: ").Append(_dacpId).Append("\r\n");
+        head.Append("Active-Remote: ").Append(_activeRemote).Append("\r\n");
+        head.Append("Client-Instance: ").Append(_dacpId).Append("\r\n");
+        head.Append("X-Apple-Client-Name: ").Append(_options.ClientName).Append("\r\n");
+        foreach (var (name, value) in extra) head.Append(name).Append(": ").Append(value).Append("\r\n");
+        if (contentType != null) head.Append("Content-Type: ").Append(contentType).Append("\r\n");
+        if (body != null) head.Append("Content-Length: ").Append(body.Length).Append("\r\n");
+        head.Append("\r\n");
+        byte[] message = [.. Encoding.UTF8.GetBytes(head.ToString()), .. body ?? []];
+
+        var pending = new TaskCompletionSource<RtspResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await _writeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            lock (_pendingLock) _pending.Enqueue(pending);
+            var wire = _controlFrames?.Seal(message) ?? message;
+            await _controlStream!.WriteAsync(wire).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+
+        var finished = await Task.WhenAny(pending.Task, Task.Delay(ResponseTimeoutMs)).ConfigureAwait(false);
+        if (finished != pending.Task) throw new TimeoutException($"{method} {uri} yanıtsız kaldı");
+        return await pending.Task.ConfigureAwait(false);
+    }
+
+    private async Task ReadControlLoop()
+    {
+        var buffer = new byte[16384];
+        SessionCloseReason reason = SessionCloseReason.Network;
+        string detail = "";
+        try
+        {
+            while (true)
+            {
+                int read = await _controlStream!.ReadAsync(buffer, _stop.Token).ConfigureAwait(false);
+                if (read == 0) { reason = SessionCloseReason.DeviceClosed; break; }
+                var plain = _controlFrames != null ? _controlFrames.Open(buffer.AsSpan(0, read)) : buffer.AsSpan(0, read).ToArray();
+                _rxPlain.Write(plain);
+                DispatchResponses();
+            }
+        }
+        catch (OperationCanceledException) { reason = SessionCloseReason.Local; }
+        catch (Exception ex) { detail = ex.Message; }
+        lock (_pendingLock)
+        {
+            while (_pending.TryDequeue(out var waiter))
+                waiter.TrySetException(new IOException("Kontrol bağlantısı kapandı"));
+        }
+        Shutdown(reason, detail);
+    }
+
+    private void DispatchResponses()
+    {
+        while (true)
+        {
+            var data = _rxPlain.GetBuffer().AsSpan(0, (int)_rxPlain.Length);
+            int headEnd = data.IndexOf("\r\n\r\n"u8);
+            if (headEnd < 0) return;
+
+            var lines = Encoding.UTF8.GetString(data[..headEnd]).Split("\r\n");
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in lines.Skip(1))
+            {
+                int colon = line.IndexOf(':');
+                if (colon > 0) headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
+            }
+            int length = int.TryParse(headers.GetValueOrDefault("Content-Length"), out int n) && n > 0 ? n : 0;
+            if (data.Length < headEnd + 4 + length) return;
+
+            var body = data.Slice(headEnd + 4, length).ToArray();
+            var rest = data[(headEnd + 4 + length)..].ToArray();
+            _rxPlain.SetLength(0);
+            _rxPlain.Write(rest);
+
+            var status = lines[0].Split(' ');
+            if (status.Length >= 2 && int.TryParse(status[1], out int code))
+            {
+                TaskCompletionSource<RtspResponse>? waiter;
+                lock (_pendingLock) _pending.TryDequeue(out waiter);
+                waiter?.TrySetResult(new RtspResponse(code, headers, body));
+            }
+        }
+    }
+
+    // HomePod olay kanalından POST /command gönderir; yanıtsız kalırsa 30 saniye içinde oturumu kapatır.
+    // Yanıt mümkün olan en yalın hâliyle kalmalı: fazladan başlık sesi kesiyor.
+    private async Task ReadEventLoop()
+    {
+        var buffer = new byte[8192];
+        var plain = new MemoryStream();
+        try
+        {
+            var stream = _event!.GetStream();
+            while (true)
+            {
+                int read = await stream.ReadAsync(buffer, _stop.Token).ConfigureAwait(false);
+                if (read == 0) return;
+                plain.Write(_eventFrames!.Open(buffer.AsSpan(0, read)));
+                while (TryTakeRequest(plain, out var cseq, out var firstLine))
+                {
+                    _log($"Olay: {firstLine}");
+                    var reply = "RTSP/1.0 200 OK\r\nServer: AirTunes/550.10\r\n" +
+                                (cseq != null ? $"CSeq: {cseq}\r\n" : "") + "\r\n";
+                    await stream.WriteAsync(_eventFrames.Seal(Encoding.ASCII.GetBytes(reply))).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log($"Olay kanalı: {ex.Message}"); }
+    }
+
+    private static bool TryTakeRequest(MemoryStream plain, out string? cseq, out string firstLine)
+    {
+        cseq = null;
+        firstLine = "";
+        var data = plain.GetBuffer().AsSpan(0, (int)plain.Length);
+        int headEnd = data.IndexOf("\r\n\r\n"u8);
+        if (headEnd < 0) return false;
+        var lines = Encoding.UTF8.GetString(data[..headEnd]).Split("\r\n");
+        firstLine = lines[0];
+        int length = 0;
+        foreach (var line in lines.Skip(1))
+        {
+            int colon = line.IndexOf(':');
+            if (colon <= 0) continue;
+            var key = line[..colon].Trim();
+            var value = line[(colon + 1)..].Trim();
+            if (key.Equals("CSeq", StringComparison.OrdinalIgnoreCase)) cseq = value;
+            if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) int.TryParse(value, out length);
+        }
+        if (data.Length < headEnd + 4 + length) return false;
+        var rest = data[(headEnd + 4 + length)..].ToArray();
+        plain.SetLength(0);
+        plain.Write(rest);
+        return true;
+    }
+
+    // ---------------------------------------------------------------- UDP
+
+    private void StartBackground(ThreadStart body, string name) =>
+        new Thread(body) { IsBackground = true, Name = name, Priority = ThreadPriority.AboveNormal }.Start();
+
+    private void TimingLoop()
+    {
+        var buffer = new byte[128];
+        var reply = new byte[32];
+        EndPoint from = new IPEndPoint(IPAddress.Any, 0);
+        while (!_stop.IsCancellationRequested)
+        {
+            try
+            {
+                int read = _timingSocket.ReceiveFrom(buffer, ref from);
+                if (read < 32) continue;
+                ulong now = NtpNow();
+                reply[0] = buffer[0];
+                reply[1] = 0xD3;
+                BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(2), 0x0007);
+                reply.AsSpan(4, 4).Clear();
+                buffer.AsSpan(24, 8).CopyTo(reply.AsSpan(8));
+                BinaryPrimitives.WriteUInt64BigEndian(reply.AsSpan(16), now);
+                BinaryPrimitives.WriteUInt64BigEndian(reply.AsSpan(24), now);
+                _timingSocket.SendTo(reply, from);
+                if (Interlocked.Increment(ref _timingRequests) == 1)
+                    _log("HomePod saat eşitlemesi başladı");
+            }
+            catch (SocketException) { }
+            catch (ObjectDisposedException) { return; }
+        }
+    }
+
+    private void ControlLoop()
+    {
+        var buffer = new byte[128];
+        var resend = new byte[PacketSize + 4];
+        EndPoint from = new IPEndPoint(IPAddress.Any, 0);
+        while (!_stop.IsCancellationRequested)
+        {
+            try
+            {
+                int read = _controlSocket.ReceiveFrom(buffer, ref from);
+                if (read < 8 || (buffer[1] & 0x7F) != 0x55) continue;
+                ushort lost = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(4));
+                ushort count = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(6));
+                for (int i = 0; i < Math.Min((int)count, BacklogSize); i++)
+                {
+                    ushort seq = (ushort)(lost + i);
+                    int slot = seq & (BacklogSize - 1);
+                    lock (_backlogLock)
+                    {
+                        if (_backlogSeq[slot] != seq) continue;
+                        _backlog.AsSpan(slot * PacketSize, PacketSize).CopyTo(resend.AsSpan(4));
+                    }
+                    resend[0] = 0x80;
+                    resend[1] = 0xD6;
+                    BinaryPrimitives.WriteUInt16BigEndian(resend.AsSpan(2), seq);
+                    _controlSocket.SendTo(resend, from);
+                    Interlocked.Increment(ref _retransmitted);
+                }
+            }
+            catch (SocketException) { }
+            catch (ObjectDisposedException) { return; }
+        }
+    }
+
+    // ---------------------------------------------------------------- ses
+
+    public void StartStreaming(IPcmSource source)
+    {
+        _audioThread = new Thread(() => AudioLoop(source))
+        {
+            IsBackground = true,
+            Name = "AirPlay ses",
+            Priority = ThreadPriority.Highest,
+        };
+        _audioThread.Start();
+        _ = Task.Run(FeedbackLoop);
+    }
+
+    private void AudioLoop(IPcmSource source)
+    {
+        using var mmcss = NativeTiming.EnterProAudio();
+        using var timer = new NativeTiming.PreciseTimer();
+
+        Span<short> pcm = new short[FramesPerPacket * Channels];
+        var packet = new byte[PacketSize];
+        Span<byte> nonce = stackalloc byte[12];
+        using var cipher = new ChaCha20Poly1305(_audioKey);
+
+        ushort seq = (ushort)RandomNumberGenerator.GetInt32(ushort.MaxValue);
+        uint ssrc = _sessionId;
+        ulong nonceCounter = 0;
+        long framesSent = 0;
+        bool first = true;
+        long start = Stopwatch.GetTimestamp();
+        ulong startNtp = NtpNow();
+        long nextSync = start;
+        uint latency = (uint)_options.LatencyFrames;
+        var syncPacket = new byte[20];
+
+        SendSync(syncPacket, framesSent, startNtp, latency, true);
+        nextSync += Stopwatch.Frequency;
+
+        while (!_stop.IsCancellationRequested)
+        {
+            long now = Stopwatch.GetTimestamp();
+            long target = (long)((now - start) * (double)SampleRate / Stopwatch.Frequency);
+
+            int burst = 0;
+            while (framesSent + FramesPerPacket <= target && burst++ < MaxBurstPackets)
+            {
+                source.Read(pcm);
+                packet[0] = 0x80;
+                packet[1] = first ? (byte)0xE0 : (byte)0x60;
+                BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(2), seq);
+                BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(4), unchecked((uint)framesSent + latency));
+                BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(8), ssrc);
+
+                var plain = packet.AsSpan(RtpHeaderSize, PayloadSize);
+                Alac.Encode(pcm, plain);
+
+                nonce[..4].Clear();
+                BinaryPrimitives.WriteUInt64LittleEndian(nonce[4..], nonceCounter);
+                cipher.Encrypt(nonce, plain, plain, packet.AsSpan(RtpHeaderSize + PayloadSize, TagSize), packet.AsSpan(4, 8));
+                nonce[4..].CopyTo(packet.AsSpan(RtpHeaderSize + PayloadSize + TagSize));
+                nonceCounter++;
+
+                int slot = seq & (BacklogSize - 1);
+                lock (_backlogLock)
+                {
+                    packet.CopyTo(_backlog.AsSpan(slot * PacketSize));
+                    _backlogSeq[slot] = seq;
+                }
+
+                try { _audioSocket.Send(packet); }
+                catch (SocketException) { }   // Geçici ağ hatası; geri besleme döngüsü kalıcı olanı yakalar.
+
+                first = false;
+                seq++;
+                framesSent += FramesPerPacket;
+                Interlocked.Increment(ref _packetsSent);
+            }
+
+            // Bilgisayar uzun süre durduysa (uyku gibi) yakalamaya çalışmak yerine zaman çizelgesini atlat.
+            if (target - framesSent > SampleRate)
+                framesSent = target / FramesPerPacket * FramesPerPacket;
+
+            if (now >= nextSync)
+            {
+                SendSync(syncPacket, framesSent, startNtp, latency, false);
+                nextSync += Stopwatch.Frequency;
+            }
+            timer.Wait(1);
+        }
+    }
+
+    private void SendSync(byte[] packet, long framesSent, ulong startNtp, uint latency, bool first)
+    {
+        if (_remoteControl == null) return;
+        ulong seconds = (ulong)(framesSent / SampleRate);
+        ulong remainder = (ulong)(framesSent % SampleRate);
+        ulong ntp = startNtp + (seconds << 32) + (remainder << 32) / SampleRate;
+
+        packet[0] = first ? (byte)0x90 : (byte)0x80;
+        packet[1] = 0xD4;
+        BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(2), 0x0007);
+        BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(4), unchecked((uint)framesSent));
+        BinaryPrimitives.WriteUInt64BigEndian(packet.AsSpan(8), ntp);
+        BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(16), unchecked((uint)framesSent + latency));
+        try { _controlSocket.SendTo(packet, _remoteControl); }
+        catch (SocketException) { }
+    }
+
+    private async Task FeedbackLoop()
+    {
+        int failures = 0;
+        while (!_stop.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(2000, _stop.Token).ConfigureAwait(false);
+                await SendAsync("POST", "/feedback", "RTSP/1.0", null, null, ("Content-Length", "0")).ConfigureAwait(false);
+                failures = 0;
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                if (++failures >= 2)
+                {
+                    Shutdown(SessionCloseReason.Network, ex.Message);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>0..100 yüzdesini AirPlay'in -30..0 dB aralığına çevirir; 0 sessizdir.</summary>
+    public async Task SetVolumeAsync(double percent)
+    {
+        double db = percent < 0.5 ? -144.0 : (percent * 3.0 - 300.0) / 10.0;
+        var body = Encoding.ASCII.GetBytes("volume: " + db.ToString("F6", CultureInfo.InvariantCulture));
+        var response = await SendAsync("SET_PARAMETER", Uri, "RTSP/1.0", "text/parameters", body).ConfigureAwait(false);
+        if (response.Code != 200) _log($"Ses seviyesi reddedildi: {response.Code}");
+    }
+
+    public async Task<double?> GetVolumePercentAsync()
+    {
+        var body = Encoding.ASCII.GetBytes("volume\r\n");
+        var response = await SendAsync("GET_PARAMETER", Uri, "RTSP/1.0", "text/parameters", body).ConfigureAwait(false);
+        var text = Encoding.ASCII.GetString(response.Body);
+        int colon = text.IndexOf(':');
+        if (response.Code != 200 || colon < 0
+            || !double.TryParse(text[(colon + 1)..].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out double db))
+            return null;
+        return db <= -30 ? 0 : Math.Clamp((db + 30) * 100 / 30, 0, 100);
+    }
+
+    // ---------------------------------------------------------------- zaman
+
+    private static ulong ToNtp(DateTime utc)
+    {
+        long ticks = utc.Ticks - DateTime.UnixEpoch.Ticks;
+        ulong seconds = (ulong)(ticks / TimeSpan.TicksPerSecond) + NtpEpochOffset;
+        ulong fraction = ((ulong)(ticks % TimeSpan.TicksPerSecond) << 32) / TimeSpan.TicksPerSecond;
+        return seconds << 32 | fraction;
+    }
+
+    private ulong NtpNow()
+    {
+        long elapsed = Stopwatch.GetTimestamp() - _baseTicks;
+        ulong seconds = (ulong)(elapsed / Stopwatch.Frequency);
+        ulong remainder = (ulong)(elapsed % Stopwatch.Frequency);
+        return _baseNtp + (seconds << 32) + (remainder << 32) / (ulong)Stopwatch.Frequency;
+    }
+
+    // ---------------------------------------------------------------- kapanış
+
+    private void Shutdown(SessionCloseReason reason, string detail)
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+        _stop.Cancel();
+        _audioThread?.Join(500);
+        _timingSocket.Dispose();
+        _controlSocket.Dispose();
+        _audioSocket.Dispose();
+        _event?.Dispose();
+        _control.Dispose();
+        _controlFrames?.Dispose();
+        _eventFrames?.Dispose();
+        _log($"Oturum kapandı: {reason} {detail}");
+        Closed?.Invoke(reason, detail);
+    }
+
+    public async Task StopAsync()
+    {
+        if (Volatile.Read(ref _closed) != 0) return;
+        try
+        {
+            using var timeout = new CancellationTokenSource(800);
+            await SendAsync("TEARDOWN", Uri, "RTSP/1.0", null, null).WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log($"TEARDOWN: {ex.Message}"); }
+        Shutdown(SessionCloseReason.Local, "");
+    }
+
+    public void Dispose() => Shutdown(SessionCloseReason.Local, "");
+}
+
+internal static partial class NativeTiming
+{
+    [LibraryImport("avrt.dll", EntryPoint = "AvSetMmThreadCharacteristicsW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr AvSetMmThreadCharacteristics(string task, out uint index);
+
+    [LibraryImport("avrt.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AvRevertMmThreadCharacteristics(IntPtr handle);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateWaitableTimerExW", SetLastError = true)]
+    private static partial IntPtr CreateWaitableTimerEx(IntPtr attributes, IntPtr name, uint flags, uint access);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWaitableTimer(IntPtr timer, in long dueTime, int period, IntPtr completion, IntPtr arg,
+                                                 [MarshalAs(UnmanagedType.Bool)] bool resume);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(IntPtr handle);
+
+    private const uint CreateHighResolution = 0x2;
+    private const uint TimerAllAccess = 0x1F0003;
+
+    public static IDisposable EnterProAudio() => new ProAudioScope(AvSetMmThreadCharacteristics("Pro Audio", out _));
+
+    private sealed class ProAudioScope(IntPtr handle) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (handle != IntPtr.Zero) AvRevertMmThreadCharacteristics(handle);
+        }
+    }
+
+    public sealed class PreciseTimer : IDisposable
+    {
+        private readonly IntPtr _handle = CreateWaitableTimerEx(IntPtr.Zero, IntPtr.Zero, CreateHighResolution, TimerAllAccess);
+
+        public void Wait(int milliseconds)
+        {
+            if (_handle == IntPtr.Zero) { Thread.Sleep(milliseconds); return; }
+            long due = -10_000L * milliseconds;
+            if (SetWaitableTimer(_handle, in due, 0, IntPtr.Zero, IntPtr.Zero, false))
+                WaitForSingleObject(_handle, 1000);
+        }
+
+        public void Dispose()
+        {
+            if (_handle != IntPtr.Zero) CloseHandle(_handle);
+        }
+    }
+}

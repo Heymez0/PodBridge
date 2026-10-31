@@ -1,0 +1,15 @@
+PodBridge, Apple Inc. ile bağlantılı değildir; onun onayını veya desteğini almamıştır.
+AirPlay ve HomePod, Apple Inc.'in ticari markalarıdır ve burada yalnızca uyumluluğu anlatmak için anılır.
+Uygulama Apple kodu, anahtarı veya sertifikası içermez.
+
+Protokol sırası şu projeler referans alınarak yeniden yazılmıştır (kod kopyalanmadan, C#'a uyarlanarak):
+
+- airplay2-sender-cpp, Copyright (c) 2026 Andreas Wendorf (Akustikrausch), Apache-2.0
+  https://github.com/akustikrausch/airplay2-sender-cpp
+- pyatv, Copyright (c) Pierre Ståhl, MIT
+  https://github.com/postlund/pyatv
+
+Kullanılan kitaplık:
+
+- NAudio, Copyright (c) Mark Heath ve katkıda bulunanlar, MIT
+  https://github.com/naudio/NAudio
