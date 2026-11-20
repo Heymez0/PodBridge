@@ -11,7 +11,7 @@ video in sync with the delayed audio.
 The interface is available in English and Turkish.
 
 <p align="center">
-  <img src="docs/panel.png" alt="PodBridge panel" width="360">
+  <img src="docs/panel-v2.png" alt="PodBridge panel" width="360">
 </p>
 
 **[Download the latest release](https://github.com/Heymez0/PodBridge/releases/latest)**: `PodBridge.exe` (Windows 10/11 x64, no .NET needed) and the browser extension zip.
