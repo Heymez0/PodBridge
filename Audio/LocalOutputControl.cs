@@ -2,9 +2,9 @@ using NAudio.CoreAudioApi;
 
 namespace PodBridge.Audio;
 
-/// <summary>Akış sürerken bilgisayar hoparlörünü susturur ve Windows ses seviyesini HomePod'a bağlar:
-/// ses tuşları ve görev çubuğu kaydırıcısı doğrudan HomePod'u kontrol eder. Bırakınca eski hâline döner.
-/// Loopback, uç nokta sessizliğinden etkilenmez.</summary>
+/// <summary>While streaming, mutes the computer's speakers and ties the Windows volume to the HomePod:
+/// the volume keys and the taskbar slider control the HomePod directly. Everything is restored on release.
+/// Loopback capture is not affected by the endpoint mute.</summary>
 public sealed class LocalOutputControl : IDisposable
 {
     private const float Epsilon = 0.004f;
@@ -22,7 +22,7 @@ public sealed class LocalOutputControl : IDisposable
         _onVolume = onVolume;
     }
 
-    /// <summary>Önceki çalışmada çökme olduysa hoparlörü eski hâline getirir.</summary>
+    /// <summary>Restores the speakers if the previous run crashed.</summary>
     public static void RestoreAfterCrash(Settings settings)
     {
         if (settings.PendingRestore is not { } saved) return;
@@ -35,7 +35,7 @@ public sealed class LocalOutputControl : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Write($"Hoparlör durumu geri yüklenemedi: {ex.Message}");
+            Log.Write($"Could not restore speaker state: {ex.Message}");
         }
         settings.PendingRestore = null;
         settings.Save();
@@ -62,24 +62,24 @@ public sealed class LocalOutputControl : IDisposable
         volume.OnVolumeNotification += OnNotification;
     }
 
-    /// <summary>Kaydırıcı arayüzden değişince Windows göstergesini de hizalar.</summary>
+    /// <summary>Keeps the Windows indicator in line when the slider in our UI moves.</summary>
     public void Reflect(double homePodPercent)
     {
         if (_device == null) return;
         _lastScalar = (float)(homePodPercent / 100.0);
         try { _device.AudioEndpointVolume.MasterVolumeLevelScalar = _lastScalar; }
-        catch (Exception ex) { Log.Write($"Windows ses seviyesi ayarlanamadı: {ex.Message}"); }
+        catch (Exception ex) { Log.Write($"Could not set the Windows volume: {ex.Message}"); }
     }
 
     private void OnNotification(AudioVolumeNotificationData data)
     {
-        // Windows, ses açma tuşuna basılınca sessizliği kaldırır; hoparlör bağırmasın diye hemen geri alıyoruz.
+        // Windows unmutes when the volume-up key is pressed; mute again right away so the speakers do not blare.
         if (!data.Muted && Interlocked.Exchange(ref _remuting, 1) == 0)
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try { if (_device != null) _device.AudioEndpointVolume.Mute = true; }
-                catch (Exception ex) { Log.Write($"Yeniden susturma: {ex.Message}"); }
+                catch (Exception ex) { Log.Write($"Re-mute: {ex.Message}"); }
                 Volatile.Write(ref _remuting, 0);
             });
         }
@@ -108,7 +108,7 @@ public sealed class LocalOutputControl : IDisposable
             }
             catch (Exception ex)
             {
-                Log.Write($"Hoparlör geri yüklenemedi: {ex.Message}");
+                Log.Write($"Could not restore the speakers: {ex.Message}");
             }
             device.Dispose();
         }

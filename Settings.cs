@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using PodBridge.Protocol;
+using PodBridge.Ui;
 
 namespace PodBridge;
 
@@ -35,6 +36,7 @@ public sealed class Settings
     public const int DefaultStableBufferMs = 1000;
 
     public LatencyMode Latency { get; set; } = LatencyMode.Low;
+    public UiLanguage Language { get; set; } = L.SystemDefault();
     public int LowBufferMs { get; set; } = DefaultLowBufferMs;
     public int BalancedBufferMs { get; set; } = DefaultBalancedBufferMs;
     public int StableBufferMs { get; set; } = DefaultStableBufferMs;
@@ -42,13 +44,13 @@ public sealed class Settings
     public bool AutoConnect { get; set; }
     public bool FirstRunDone { get; set; }
 
-    /// <summary>Uygulama çökerse bilgisayar hoparlörünün sessiz kalmaması için saklanır.</summary>
+    /// <summary>Saved so the computer's speakers do not stay muted if the app crashes.</summary>
     public LocalAudioSnapshot? PendingRestore { get; set; }
 
     private static string NewClientId()
     {
         var bytes = RandomNumberGenerator.GetBytes(6);
-        bytes[0] = (byte)(bytes[0] & 0xFE | 0x02);  // Yerel yönetilen MAC biçimi
+        bytes[0] = (byte)(bytes[0] & 0xFE | 0x02);  // Locally administered MAC format
         return string.Join(':', bytes.Select(b => b.ToString("X2")));
     }
 
@@ -65,12 +67,12 @@ public sealed class Settings
     {
         int estimate = EstimateEndToEndMs(BufferMs(Latency));
         return estimate < 1000
-            ? $"yaklaşık {(estimate + 5) / 10 * 10} ms"
-            : $"yaklaşık {estimate / 1000.0:F1} sn".Replace('.', ',');
+            ? L.T($"about {(estimate + 5) / 10 * 10} ms", $"yaklaşık {(estimate + 5) / 10 * 10} ms")
+            : L.T($"about {estimate / 1000.0:F1} s", $"yaklaşık {estimate / 1000.0:F1} sn".Replace('.', ','));
     }
 
-    /// <summary>HomePod mini ve Wi-Fi üzerinde mikrofonla yapılan ölçümler arasında doğrusal tahmin.
-    /// Son ölçümün üstünde tampon kadar arttığı varsayılır.</summary>
+    /// <summary>Linear interpolation between microphone measurements on a HomePod mini over Wi-Fi.
+    /// Above the last measurement it is assumed to grow one-to-one with the buffer.</summary>
     public static int EstimateEndToEndMs(int bufferMs)
     {
         (int Buffer, int EndToEnd)[] measured = [(50, 270), (120, 420), (200, 570), (400, 838)];
@@ -117,7 +119,7 @@ public sealed class Settings
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Log.Write($"Ayarlar kaydedilemedi: {ex.Message}");
+            Log.Write($"Could not save settings: {ex.Message}");
         }
     }
 }
@@ -141,7 +143,7 @@ public static class Log
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Günlük yazılamıyorsa ses akışı bundan etkilenmemeli.
+                // Failing to write the log must not affect audio.
             }
         }
     }

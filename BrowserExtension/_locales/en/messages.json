@@ -1,0 +1,22 @@
+{
+  "extensionName": { "message": "PodBridge Video Sync" },
+  "extensionDescription": { "message": "Delays video by the PodBridge audio latency while it streams to HomePod, so lips and sound line up." },
+  "popupTitle": { "message": "Video sync" },
+  "statusLoading": { "message": "Reading status…" },
+  "grantAccess": { "message": "Allow access to local PodBridge" },
+  "syncToggle": { "message": "Sync video with audio" },
+  "fineTune": { "message": "Fine tune" },
+  "fineTuneHint": { "message": "Move right if the picture is ahead of the sound, left if it lags behind." },
+  "drmHint": { "message": "Browsers do not allow delaying protected (DRM) video such as Netflix." },
+  "needAccess": { "message": "PodBridge needs access permission." },
+  "notRunning": { "message": "PodBridge is not running." },
+  "notStreaming": { "message": "PodBridge is open but not streaming to a HomePod. Video plays normally." },
+  "delaying": {
+    "message": "$DEVICE$ is playing. Video is delayed by $MS$ ms.",
+    "placeholders": { "device": { "content": "$1" }, "ms": { "content": "$2" } }
+  },
+  "syncOff": {
+    "message": "$DEVICE$ is playing. Sync is off.",
+    "placeholders": { "device": { "content": "$1" } }
+  }
+}

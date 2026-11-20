@@ -8,8 +8,8 @@ using PodBridge.Protocol;
 
 namespace PodBridge;
 
-/// <summary>Uçtan uca gecikme ölçümü: Windows çıkışına tık sesi verir, HomePod'dan çıkan sesi mikrofonla yakalar.
-/// Mikrofon verisi yalnızca bellekte tepe aramak için kullanılır, kaydedilmez.
+/// <summary>End-to-end latency measurement: plays clicks on the Windows output and listens for them from the HomePod with the microphone.
+/// Microphone data is only searched for peaks in memory and never recorded.
 /// PodBridge --measure --ip 192.168.1.50 --latency 8820 --volume 25</summary>
 internal static class LatencyMeter
 {
@@ -27,7 +27,7 @@ internal static class LatencyMeter
         using var enumerator = new MMDeviceEnumerator();
         using var output = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
         using var microphone = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
-        Print($"Çıkış: {output.FriendlyName} / Mikrofon: {microphone.FriendlyName}");
+        Print($"Output: {output.FriendlyName} / Microphone: {microphone.FriendlyName}");
 
         float savedVolume = output.AudioEndpointVolume.MasterVolumeLevelScalar;
         bool savedMute = output.AudioEndpointVolume.Mute;
@@ -39,20 +39,20 @@ internal static class LatencyMeter
             await session.ConnectAsync(CancellationToken.None);
             session.StartStreaming(loopback);
             await session.SetVolumeAsync(volume);
-            Print($"HomePod bildirdiği gecikme: {session.ReceiverLatencyMs} ms, istenen tampon: {latency * 1000 / AirPlaySession.SampleRate} ms");
+            Print($"Latency reported by the HomePod: {session.ReceiverLatencyMs} ms, requested buffer: {latency * 1000 / AirPlaySession.SampleRate} ms");
             await Task.Delay(1500);
 
             var results = await MeasureAsync(output, microphone, loopback, Print);
             if (results.Count == 0)
             {
-                Print("SONUÇ: Mikrofon tık sesini duyamadı (HomePod uzakta olabilir).");
+                Print("RESULT: the microphone did not hear the clicks (the HomePod may be too far away).");
             }
             else
             {
                 results.Sort();
-                Print($"SONUÇ: uçtan uca ortanca {results[results.Count / 2]:F0} ms, en az {results[0]:F0}, en çok {results[^1]:F0} ({results.Count}/{Clicks} tık)");
+                Print($"RESULT: end-to-end median {results[results.Count / 2]:F0} ms, min {results[0]:F0}, max {results[^1]:F0} ({results.Count}/{Clicks} clicks)");
             }
-            Print($"Yetersizlik: {loopback.Underruns}, yeniden gönderim: {session.PacketsRetransmitted}, tampon doluluğu: {loopback.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
+            Print($"Underruns: {loopback.Underruns}, retransmits: {session.PacketsRetransmitted}, buffer fill: {loopback.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
             await session.StopAsync();
             return results.Count > 0 ? 0 : 4;
         }
@@ -63,7 +63,7 @@ internal static class LatencyMeter
         }
     }
 
-    /// <summary>Teşhis: etkin çıkış aygıtlarını ve hangi uygulamanın nereye ses verdiğini listeler, hiçbir şeyi değiştirmez.</summary>
+    /// <summary>Diagnostics: lists active output devices and which app is playing where. Changes nothing.</summary>
     public static int PrintAudioStatus()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -76,8 +76,8 @@ internal static class LatencyMeter
                 peak = Math.Max(peak, device.AudioMeterInformation.MasterPeakValue);
                 Thread.Sleep(50);
             }
-            string marker = device.ID == fallback.ID ? " [VARSAYILAN]" : "";
-            Console.WriteLine($"{device.FriendlyName}{marker}: tepe {peak:F3}, ses %{device.AudioEndpointVolume.MasterVolumeLevelScalar * 100:F0}, sessiz={device.AudioEndpointVolume.Mute}");
+            string marker = device.ID == fallback.ID ? " [DEFAULT]" : "";
+            Console.WriteLine($"{device.FriendlyName}{marker}: peak {peak:F3}, volume {device.AudioEndpointVolume.MasterVolumeLevelScalar * 100:F0}%, muted={device.AudioEndpointVolume.Mute}");
             var sessions = device.AudioSessionManager.Sessions;
             for (int i = 0; i < sessions.Count; i++)
             {
@@ -86,14 +86,14 @@ internal static class LatencyMeter
                 string name;
                 try { name = Process.GetProcessById((int)session.GetProcessID).ProcessName; }
                 catch (ArgumentException) { name = "?"; }
-                Console.WriteLine($"    {name}: tepe {session.AudioMeterInformation.MasterPeakValue:F3}");
+                Console.WriteLine($"    {name}: peak {session.AudioMeterInformation.MasterPeakValue:F3}");
             }
         }
         return 0;
     }
 
-    /// <summary>Çalan sesi sırayla farklı tamponlarla aktarır; kulakla en küçük temiz tampon bulunur.
-    /// Bölümler arasındaki kısa sessizlik sayımı kolaylaştırır.
+    /// <summary>Streams whatever is playing with a series of buffer sizes so the smallest clean one can be found by ear.
+    /// The short silence between sections makes them easy to count.
     /// PodBridge --sweep --ip 192.168.1.50 --values 200,150,120,100,85 --seconds 15</summary>
     public static async Task<int> SweepAsync(string[] args)
     {
@@ -107,10 +107,10 @@ internal static class LatencyMeter
         double? volume = Program.Option(args, "--volume") is { } v ? double.Parse(v) : null;
         try
         {
-            // Uygulamayla aynı sıra: önce yakalama başlar, hoparlör sonra susturulur.
+            // Same order as the app: capture starts first, the speakers are muted after.
             using var loopback = new LoopbackSource(Log.Write);
             await Task.Delay(500);
-            Log.Write($"Susturmadan önce yakalanan tepe: {loopback.Peak:F3}");
+            Log.Write($"Peak captured before muting: {loopback.Peak:F3}");
             output.AudioEndpointVolume.Mute = true;
             for (int i = 0; i < values.Count; i++)
             {
@@ -127,8 +127,8 @@ internal static class LatencyMeter
                     await Task.Delay(100);
                     loudest = Math.Max(loudest, loopback.Peak);
                 }
-                Log.Write($"{i + 1}. bölüm: tampon {values[i]} ms, HomePod sesi %{homePodVolume:F0}, yakalanan tepe {loudest:F3}, " +
-                                  $"{session.PacketsSent} paket, {session.PacketsRetransmitted} yeniden gönderim, {loopback.Underruns - underrunsBefore} yetersizlik");
+                Log.Write($"Section {i + 1}: buffer {values[i]} ms, HomePod volume {homePodVolume:F0}%, captured peak {loudest:F3}, " +
+                                  $"{session.PacketsSent} packets, {session.PacketsRetransmitted} retransmits, {loopback.Underruns - underrunsBefore} underruns");
                 await session.StopAsync();
                 await Task.Delay(2500);
             }
@@ -140,8 +140,8 @@ internal static class LatencyMeter
         }
     }
 
-    /// <summary>Hoparlör susturulmuşken ton çalıp, uç nokta ses seviyesinin loopback düzeyini değiştirip değiştirmediğine bakar.
-    /// Windows kaydırıcısını HomePod'a bağladığımız için bu aygıtta seviye bağımsız olmalı.</summary>
+    /// <summary>Plays a tone with the speakers muted and checks whether the endpoint volume changes the loopback level.
+    /// Because the Windows slider is tied to the HomePod, the level must be independent of it.</summary>
     public static async Task<int> ProbeVolumeAsync()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -164,7 +164,7 @@ internal static class LatencyMeter
                 await Task.Delay(600);
                 var drain = new short[704];
                 for (int i = 0; i < 10; i++) loopback.Read(drain);
-                Console.WriteLine($"Ses seviyesi %{level * 100:F0}: yakalanan tepe {loopback.Peak:F3}");
+                Console.WriteLine($"Volume {level * 100:F0}%: captured peak {loopback.Peak:F3}");
             }
             player.Stop();
             return 0;
@@ -187,7 +187,7 @@ internal static class LatencyMeter
             int bytesPerSample = micFormat.BitsPerSample / 8;
             int frameBytes = bytesPerSample * micFormat.Channels;
             int frames = e.BytesRecorded / frameBytes;
-            // Tık frekansındaki enerjiyi Goertzel ile ölç; oda gürültüsünün tepe seviyesi yanıltmasın.
+            // Measure energy at the click frequency with Goertzel so room noise peaks do not mislead us.
             int window = micFormat.SampleRate / 500;
             double coefficient = 2 * Math.Cos(2 * Math.PI * ClickHz / micFormat.SampleRate);
             for (int start = 0; start + window <= frames; start += window)
@@ -222,11 +222,11 @@ internal static class LatencyMeter
         player.Play();
         await Task.Delay(800);
 
-        // Sessiz ortam seviyesini ölç.
+        // Measure the quiet room level.
         float ambient;
         lock (levels) ambient = levels.Count > 0 ? levels.Max(l => l.Peak) : 0;
         float threshold = Math.Max(ambient * 2.5f, 0.002f);
-        print($"Ortam tepesi {ambient:F4}, eşik {threshold:F4}");
+        print($"Ambient peak {ambient:F4}, threshold {threshold:F4}");
 
         var clickTimes = new List<long>();
         for (int i = 0; i < Clicks; i++)
@@ -248,18 +248,18 @@ internal static class LatencyMeter
                 {
                     double ms = (hit.Ticks - t) * 1000.0 / Stopwatch.Frequency;
                     results.Add(ms);
-                    print($"  tık: {ms:F0} ms (tepe {hit.Peak:F3})");
+                    print($"  click: {ms:F0} ms (peak {hit.Peak:F3})");
                 }
                 else
                 {
-                    print("  tık: duyulmadı");
+                    print("  click: not heard");
                 }
             }
         }
         return results;
     }
 
-    /// <summary>İstenince kısa süre ses geçirir; ilk örneğin çıktığı anı döndürmek için aygıt tamponu kadar beklenir.</summary>
+    /// <summary>Lets sound through briefly on request; waits up to one device buffer to return when the first sample went out.</summary>
     private sealed class GatedProvider : IWaveProvider
     {
         private readonly IWaveProvider _inner;

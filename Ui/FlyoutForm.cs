@@ -5,8 +5,8 @@ using PodBridge.Protocol;
 
 namespace PodBridge.Ui;
 
-/// <summary>Windows 11 hızlı ayarlar paneli görünümünde görev çubuğu paneli.
-/// Tek bir yüzeye çizilir; tıklanabilir alanlar her boyamada yeniden kaydedilir.</summary>
+/// <summary>Tray panel styled after the Windows 11 quick settings flyout.
+/// Drawn on a single surface; clickable regions are re-registered on every paint.</summary>
 public sealed class FlyoutForm : Form
 {
     private const int BaseWidth = 340;
@@ -42,7 +42,7 @@ public sealed class FlyoutForm : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x00000080;   // WS_EX_TOOLWINDOW: Alt+Tab listesinde görünmez
+            cp.ExStyle |= 0x00000080;   // WS_EX_TOOLWINDOW: hidden from Alt+Tab
             cp.ClassStyle |= 0x00020000;   // CS_DROPSHADOW
             return cp;
         }
@@ -109,11 +109,11 @@ public sealed class FlyoutForm : Form
         float h = Pad + 44;
         h += Math.Max(_app.Devices.Count, 1) * (RowHeight + 4);
         if (_app.Engine.State == BridgeState.NeedsFirewall) h += 72;
-        h += 58 + 8 + 70 + 3 * 36 + Pad;
+        h += 58 + 8 + 70 + 3 * 36 + 8 + 20 + 26 + Pad;
         return (int)S(h);
     }
 
-    // ---------------------------------------------------------------- çizim
+    // ---------------------------------------------------------------- painting
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -130,7 +130,7 @@ public sealed class FlyoutForm : Form
         float x = S(Pad), w = Width - 2 * S(Pad), y = S(Pad);
         var engine = _app.Engine;
 
-        DrawText(g, "Sesi HomePod'a aktar", bigFont, _text, x, y, w);
+        DrawText(g, L.T("Stream to HomePod", "Sesi HomePod'a aktar"), bigFont, _text, x, y, w);
         y += S(24);
         DrawText(g, StatusText(), smallFont, engine.State is BridgeState.NeedsFirewall or BridgeState.Failed ? _warn : _subtext, x, y, w);
         y += S(26);
@@ -138,7 +138,7 @@ public sealed class FlyoutForm : Form
         if (_app.Devices.Count == 0)
         {
             DrawCard(g, x, y, w, S(RowHeight), false, false);
-            DrawText(g, _app.IsBrowsing ? "HomePod aranıyor…" : "HomePod bulunamadı", bodyFont, _subtext, x + S(14), y + S(12), w);
+            DrawText(g, _app.IsBrowsing ? L.T("Looking for HomePods…", "HomePod aranıyor…") : L.T("No HomePod found", "HomePod bulunamadı"), bodyFont, _subtext, x + S(14), y + S(12), w);
             y += S(RowHeight + 4);
         }
         foreach (var device in _app.Devices)
@@ -152,25 +152,25 @@ public sealed class FlyoutForm : Form
             DrawSpeaker(g, x + S(14), y + S(13), active ? _accentText : _text);
             DrawText(g, device.Name, bodyFont, active ? _accentText : _text, x + S(40), y + S(12), w - S(90));
             if (active && engine.State == BridgeState.Streaming)
-                DrawText(g, "Bağlı", smallFont, _accentText, x + w - S(46), y + S(14), S(46));
+                DrawText(g, L.T("Connected", "Bağlı"), smallFont, _accentText, x + w - S(46), y + S(14), S(46));
             y += S(RowHeight + 4);
         }
 
         if (engine.State == BridgeState.NeedsFirewall)
         {
             DrawCard(g, x, y, w, S(66), false, false);
-            DrawText(g, "HomePod'un saat paketleri engelleniyor. Windows'ta tek seferlik izin gerekli.", smallFont, _text, x + S(12), y + S(8), w - S(24));
+            DrawText(g, L.T("The HomePod's clock packets are blocked. Windows needs a one-time permission.", "HomePod'un saat paketleri engelleniyor. Windows'ta tek seferlik izin gerekli."), smallFont, _text, x + S(12), y + S(8), w - S(24));
             var btn = new RectangleF(x + S(12), y + S(38), S(100), S(22));
             _hits.Add((btn, () => _app.RequestFirewall(), "firewall"));
             Fill(g, _accent, btn, S(4));
-            DrawText(g, "İzin ver", smallFont, _accentText, btn.X + S(28), btn.Y + S(2), btn.Width);
+            DrawText(g, L.T("Allow", "İzin ver"), smallFont, _accentText, btn.X + S(28), btn.Y + S(2), btn.Width);
             y += S(72);
         }
 
         y += S(6);
-        DrawText(g, "Ses seviyesi", smallFont, _subtext, x, y, w);
+        DrawText(g, L.T("Volume", "Ses seviyesi"), smallFont, _subtext, x, y, w);
         double shown = _sliderValue >= 0 ? _sliderValue : Math.Max(engine.Volume, 0);
-        DrawText(g, $"%{shown:F0}", smallFont, _subtext, x + w - S(36), y, S(40));
+        DrawText(g, L.T($"{shown:F0}%", $"%{shown:F0}"), smallFont, _subtext, x + w - S(36), y, S(40));
         y += S(22);
         _sliderTrack = new RectangleF(x + S(4), y + S(8), w - S(8), S(4));
         bool sliderEnabled = engine.State == BridgeState.Streaming;
@@ -184,13 +184,13 @@ public sealed class FlyoutForm : Form
         using (var pen = new Pen(_line)) g.DrawLine(pen, x, y, x + w, y);
         y += S(8);
 
-        DrawText(g, "Gecikme", smallFont, _subtext, x, y, w);
-        var editSize = g.MeasureString("Düzenle", smallFont);
+        DrawText(g, L.T("Latency", "Gecikme"), smallFont, _subtext, x, y, w);
+        var editSize = g.MeasureString(L.T("Edit", "Düzenle"), smallFont);
         var editRect = new RectangleF(x + w - editSize.Width, y, editSize.Width, editSize.Height);
         _hits.Add((editRect, () => _app.EditLatencyPresets(), "edit-presets"));
-        DrawText(g, "Düzenle", smallFont, _accent, editRect.X, editRect.Y, editRect.Width + S(4));
+        DrawText(g, L.T("Edit", "Düzenle"), smallFont, _accent, editRect.X, editRect.Y, editRect.Width + S(4));
         y += S(20);
-        string[] labels = ["Düşük", "Dengeli", "Kararlı"];
+        string[] labels = [L.T("Low", "Düşük"), L.T("Balanced", "Dengeli"), L.T("Stable", "Kararlı")];
         float segment = w / 3;
         for (int i = 0; i < 3; i++)
         {
@@ -209,9 +209,29 @@ public sealed class FlyoutForm : Form
         }
         y += S(50);
 
-        DrawCheck(g, "Bilgisayar hoparlörünü sustur", _app.Settings.MuteLocal, x, ref y, w, smallFont, "mute", () => _app.ToggleMuteLocal());
-        DrawCheck(g, "Windows ile başlat", _app.AutoStart, x, ref y, w, smallFont, "autostart", () => _app.ToggleAutoStart());
-        DrawCheck(g, "Açılışta otomatik bağlan", _app.Settings.AutoConnect, x, ref y, w, smallFont, "autoconnect", () => _app.ToggleAutoConnect());
+        DrawCheck(g, L.T("Mute computer speakers", "Bilgisayar hoparlörünü sustur"), _app.Settings.MuteLocal, x, ref y, w, smallFont, "mute", () => _app.ToggleMuteLocal());
+        DrawCheck(g, L.T("Start with Windows", "Windows ile başlat"), _app.AutoStart, x, ref y, w, smallFont, "autostart", () => _app.ToggleAutoStart());
+        DrawCheck(g, L.T("Connect automatically at startup", "Açılışta otomatik bağlan"), _app.Settings.AutoConnect, x, ref y, w, smallFont, "autoconnect", () => _app.ToggleAutoConnect());
+
+        using (var pen = new Pen(_line)) g.DrawLine(pen, x, y, x + w, y);
+        y += S(8);
+        // Each language is labeled in its own language so it can be found whatever is currently shown.
+        DrawText(g, L.T("Language", "Dil"), smallFont, _subtext, x, y, w);
+        y += S(20);
+        (UiLanguage Language, string Label)[] languages = [(UiLanguage.English, "English"), (UiLanguage.Turkish, "Türkçe")];
+        float half = w / 2;
+        for (int i = 0; i < languages.Length; i++)
+        {
+            var (language, label) = languages[i];
+            var rect = new RectangleF(x + i * half + (i > 0 ? S(2) : 0), y, half - S(2), S(26));
+            string key = "language:" + i;
+            _hits.Add((rect, () => _app.SetLanguage(language), key));
+            bool on = L.Current == language;
+            Fill(g, on ? _accent : _hoverKey == key ? _cardHover : _card, rect, S(4));
+            var size = g.MeasureString(label, smallFont);
+            using var brush = new SolidBrush(on ? _accentText : _text);
+            g.DrawString(label, smallFont, brush, rect.X + (rect.Width - size.Width) / 2, rect.Y + (rect.Height - size.Height) / 2);
+        }
     }
 
     private string StatusText()
@@ -219,13 +239,13 @@ public sealed class FlyoutForm : Form
         var engine = _app.Engine;
         return engine.State switch
         {
-            BridgeState.Streaming => $"{engine.Device?.Name} çalıyor · gecikme {_app.Settings.LatencyLabel()}",
-            BridgeState.Connecting => "Bağlanıyor…",
-            BridgeState.Reconnecting => $"Bağlantı koptu, {engine.Detail}",
-            BridgeState.TakenOver => "HomePod başka bir cihaza geçti",
-            BridgeState.NeedsFirewall => "Güvenlik duvarı izni gerekiyor",
+            BridgeState.Streaming => L.T($"Playing on {engine.Device?.Name} · latency {_app.Settings.LatencyLabel()}", $"{engine.Device?.Name} çalıyor · gecikme {_app.Settings.LatencyLabel()}"),
+            BridgeState.Connecting => L.T("Connecting…", "Bağlanıyor…"),
+            BridgeState.Reconnecting => L.T($"Connection lost, {engine.Detail}", $"Bağlantı koptu, {engine.Detail}"),
+            BridgeState.TakenOver => L.T("The HomePod switched to another device", "HomePod başka bir cihaza geçti"),
+            BridgeState.NeedsFirewall => L.T("Firewall permission needed", "Güvenlik duvarı izni gerekiyor"),
             BridgeState.Failed => engine.Detail,
-            _ => "Bir HomePod seç",
+            _ => L.T("Pick a HomePod", "Bir HomePod seç"),
         };
     }
 
@@ -282,11 +302,10 @@ public sealed class FlyoutForm : Form
 
     private void DrawSpeaker(Graphics g, float x, float y, Color color)
     {
-        using var brush = new SolidBrush(color);
-        g.FillEllipse(brush, x + S(3), y, S(13), S(18));
+        Glyphs.DrawHomePod(g, color, new RectangleF(x - S(2), y - S(2), S(22), S(22)));
     }
 
-    /// <summary>Ekrana çıkmadan görünüm denetimi için panelin görüntüsünü alır.</summary>
+    /// <summary>Renders the panel to an image so its look can be checked without showing it.</summary>
     public void RenderTo(string path)
     {
         _scale = DeviceDpi / 96f;
@@ -296,7 +315,7 @@ public sealed class FlyoutForm : Form
         bitmap.Save(path);
     }
 
-    // ---------------------------------------------------------------- fare
+    // ---------------------------------------------------------------- mouse
 
     protected override void OnMouseMove(MouseEventArgs e)
     {

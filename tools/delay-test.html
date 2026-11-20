@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Video delay test</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #202020; color: #fff; font: 14px "Segoe UI", sans-serif; }
+    #player { position: relative; width: 480px; height: 270px; background: #000; }
+    video { width: 100%; height: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <!-- Measures the extension's delay core without a real site. The source canvas writes the time it was drawn
+       into a black and white grid; reading the grid back from the delayed canvas shows how old the picture is.
+       Run: python -m http.server 8765 --directory <repo>, open /tools/delay-test.html, then call runDelayTest(420). -->
+  <div id="player"><video id="video" muted autoplay playsinline></video></div>
+  <pre id="result">loading</pre>
+  <script src="../BrowserExtension/delay-core.js"></script>
+  <script>
+    "use strict";
+    // Browsers stop the draw loop when the window is not on screen; the test uses a fixed-interval timer instead.
+    PodBridgeDelay.VideoDelayer.schedule = (callback) => setTimeout(callback, 16);
+    PodBridgeDelay.VideoDelayer.unschedule = (handle) => clearTimeout(handle);
+    const source = document.createElement("canvas");
+    source.width = 320;
+    source.height = 180;
+    const sourceContext = source.getContext("2d");
+    // Each frame carries the time it was drawn in 10 ms units, so the age of the shown frame can be read directly.
+    let index = 0;
+    (function drawSource() {
+      index = Math.floor(performance.now() / 10) % 65536;
+      // Each cell of the 4x4 grid is one bit; unlike color values this survives the video color conversion.
+      for (let bit = 0; bit < 16; bit++) {
+        sourceContext.fillStyle = (index >> bit) & 1 ? "#fff" : "#000";
+        sourceContext.fillRect((bit % 4) * 80, Math.floor(bit / 4) * 45, 80, 45);
+      }
+      setTimeout(drawSource, 8);
+    })();
+
+    const video = document.getElementById("video");
+    video.srcObject = source.captureStream(60);
+
+    const probe = document.createElement("canvas");
+    probe.width = probe.height = 4;
+    const probeContext = probe.getContext("2d", { willReadFrequently: true });
+
+    function lagOf(element) {
+      const width = element.videoWidth || element.width;
+      const height = element.videoHeight || element.height;
+      // The canvas letterboxes the video ("contain"), so only the picture area is read.
+      const scale = Math.min(width / 320, height / 180);
+      const w = 320 * scale, h = 180 * scale;
+      probeContext.imageSmoothingQuality = "high";
+      probeContext.drawImage(element, (width - w) / 2, (height - h) / 2, w, h, 0, 0, 4, 4);
+      const data = probeContext.getImageData(0, 0, 4, 4).data;
+      let value = 0;
+      for (let bit = 0; bit < 16; bit++) if (data[bit * 4] > 128) value |= 1 << bit;
+      const now = Math.floor(performance.now() / 10) % 65536;
+      return ((now - value + 65536) % 65536) * 10;
+    }
+
+    async function sample(read, count) {
+      const values = [];
+      for (let i = 0; i < count; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 97));
+        values.push(read());
+      }
+      values.sort((a, b) => a - b);
+      return values[Math.floor(values.length / 2)];
+    }
+
+    // The canvas lets mouse events through, so elementFromPoint skips it; compare paint order instead.
+    function overlayOnTop(overlay) {
+      if (!overlay) return false;
+      const zVideo = Number(getComputedStyle(video).zIndex) || 0;
+      const zOverlay = Number(overlay.style.zIndex) || 0;
+      return overlay.previousElementSibling === video && zOverlay >= zVideo
+        && getComputedStyle(overlay).position === "absolute";
+    }
+
+    window.runDelayTest = async (delayMs) => {
+      await video.play();
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const baseline = await sample(() => lagOf(video), 15);
+
+      const manager = new PodBridgeDelay.VideoDelayManager();
+      manager.setDelay(delayMs);
+      await new Promise((resolve) => setTimeout(resolve, delayMs + 1000));
+      const overlay = document.querySelector("canvas[data-podbridge]");
+      const delayed = overlay ? await sample(() => lagOf(overlay), 20) : NaN;
+      const box = overlay?.getBoundingClientRect();
+      const videoBox = video.getBoundingClientRect();
+
+      const onTop = overlayOnTop(overlay);
+      manager.setDelay(0);
+      const restored = !document.querySelector("canvas[data-podbridge]") && getComputedStyle(video).opacity === "1";
+      const result = {
+        delayMs,
+        baselineLagMs: Math.round(baseline),
+        delayedLagMs: Math.round(delayed),
+        addedMs: Math.round(delayed - baseline),
+        overlayOnTop: onTop,
+        overlayMatchesVideo: Boolean(box) && Math.abs(box.left - videoBox.left) < 1 && Math.abs(box.top - videoBox.top) < 1
+          && Math.abs(box.width - videoBox.width) < 1 && Math.abs(box.height - videoBox.height) < 1,
+        restoredAfterStop: restored,
+      };
+      document.getElementById("result").textContent = JSON.stringify(result, null, 2);
+      return result;
+    };
+    document.getElementById("result").textContent = "ready";
+  </script>
+</body>
+</html>

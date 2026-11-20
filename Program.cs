@@ -37,22 +37,60 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
             var settings = new Settings { FirstRunDone = true };
-            settings.KnownDevices.Add(new AirPlayDevice("AA:BB:CC:DD:EE:01", "Çalışma Odası", "AudioAccessory5,1", "192.168.1.50", 7000));
+            settings.KnownDevices.Add(new AirPlayDevice("AA:BB:CC:DD:EE:01", "Living Room", "AudioAccessory5,1", "192.168.1.50", 7000));
+            L.Current = Option(args, "--language") == "tr" ? UiLanguage.Turkish : UiLanguage.English;
             new AppController(settings).RenderPanelAndExit(imagePath);
             return 0;
         }
         if (Option(args, "--render-presets") is { } editorImage)
         {
             ApplicationConfiguration.Initialize();
+            L.Current = Option(args, "--language") == "tr" ? UiLanguage.Turkish : UiLanguage.English;
             using var editor = new PresetEditorForm(new Settings { LowBufferMs = 80 });
-            editor.StartPosition = FormStartPosition.Manual;
-            editor.Location = new Point(-4000, -4000);
-            editor.ShowInTaskbar = false;
+            // Off-screen rendering does not draw the title bar and text boxes faithfully, so show the window briefly and grab the screen.
             editor.Show();
-            Application.DoEvents();
+            for (int i = 0; i < 20; i++)
+            {
+                Application.DoEvents();
+                Thread.Sleep(25);
+            }
             using var bitmap = new Bitmap(editor.Width, editor.Height);
-            editor.DrawToBitmap(bitmap, new Rectangle(0, 0, editor.Width, editor.Height));
+            using (var g = Graphics.FromImage(bitmap)) g.CopyFromScreen(editor.Location, Point.Empty, editor.Size);
             bitmap.Save(editorImage);
+            editor.Close();
+            return 0;
+        }
+        if (Option(args, "--write-extension-icons") is { } iconFolder)
+        {
+            Directory.CreateDirectory(iconFolder);
+            foreach (int size in new[] { 16, 32, 48, 128 })
+            {
+                using var icon = Ui.Glyphs.AppIcon(size);
+                icon.Save(Path.Combine(iconFolder, $"{size}.png"));
+            }
+            return 0;
+        }
+        if (Option(args, "--write-icon") is { } iconPath)
+        {
+            Ui.Glyphs.WriteIco(iconPath, 16, 20, 24, 32, 40, 48, 64, 256);
+            using var preview = Ui.Glyphs.AppIcon(256);
+            preview.Save(Path.ChangeExtension(iconPath, ".png"));
+            using var small = Ui.Glyphs.AppIcon(32);
+            using var smallLarge = new Bitmap(128, 128);
+            using (var g = Graphics.FromImage(smallLarge))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                g.DrawImage(small, 0, 0, 128, 128);
+            }
+            smallLarge.Save(Path.Combine(Path.GetDirectoryName(iconPath)!, "app-32px.png"));
+            foreach (var (name, badge) in new (string, Color?)[] { ("idle", null), ("active", Color.FromArgb(76, 194, 255)), ("warn", Color.FromArgb(255, 185, 0)) })
+            {
+                using var icon = Ui.Glyphs.TrayIcon(badge);
+                using var bitmap = icon.ToBitmap();
+                using var large = new Bitmap(bitmap, bitmap.Width * 4, bitmap.Height * 4);
+                large.Save(Path.Combine(Path.GetDirectoryName(iconPath)!, $"tray-{name}.png"));
+            }
             return 0;
         }
         if (args.Contains("--sweep"))
@@ -85,19 +123,21 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => Log.Write($"Arayüz hatası: {e.Exception}");
+        Application.ThreadException += (_, e) => Log.Write($"UI error: {e.Exception}");
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
-            Log.Write($"Görev hatası: {e.Exception.InnerException?.Message}");
+            Log.Write($"Task error: {e.Exception.InnerException?.Message}");
             e.SetObserved();
         };
-        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"Beklenmeyen hata: {e.ExceptionObject}");
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"Unhandled error: {e.ExceptionObject}");
 
-        // Windows Forms eşitleme bağlamı, denetleyici oluşturulmadan önce hazır olmalı.
+        // The Windows Forms synchronization context must exist before the controller is created.
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-        var controller = new AppController(Settings.Load());
+        var settings = Settings.Load();
+        L.Current = settings.Language;
+        var controller = new AppController(settings);
 
-        // Uygulama ikinci kez açılırsa yeni süreç kapanır, var olan panel açılır.
+        // If the app is launched a second time, the new process exits and the running one shows its panel.
         var ui = SynchronizationContext.Current!;
         ThreadPool.RegisterWaitForSingleObject(showEvent, (_, _) => ui.Post(_ => controller.ShowPanel(), null),
                                                null, Timeout.Infinite, false);
@@ -111,10 +151,10 @@ internal static class Program
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
 
-    // Komut satırı testi: PodBridge --test --ip 192.168.1.50 --seconds 40 [--tone 440] [--loopback] [--volume 25] [--latency 22050]
+    // Command-line test: PodBridge --test --ip 192.168.1.50 --seconds 40 [--tone 440] [--loopback] [--volume 25] [--latency 22050]
     private static async Task<int> RunTest(string[] args)
     {
-        var ip = IPAddress.Parse(Option(args, "--ip") ?? throw new ArgumentException("--ip gerekli"));
+        var ip = IPAddress.Parse(Option(args, "--ip") ?? throw new ArgumentException("--ip is required"));
         int seconds = int.Parse(Option(args, "--seconds") ?? "10");
         int latency = int.Parse(Option(args, "--latency") ?? "66150");
         double toneHz = double.Parse(Option(args, "--tone") ?? "0");
@@ -131,14 +171,14 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Print($"BAĞLANTI HATASI [{ex.GetType().Name}]: {ex.Message}");
+            Print($"CONNECTION FAILED [{ex.GetType().Name}]: {ex.Message}");
             return 2;
         }
 
         using var loopback = args.Contains("--loopback") ? new LoopbackSource(Print) : null;
         var tone = new ToneSource(toneHz);
         session.StartStreaming(loopback != null ? loopback : tone);
-        Print($"Akış başladı. Mevcut ses: {await session.GetVolumePercentAsync():F0}%");
+        Print($"Streaming. Current volume: {await session.GetVolumePercentAsync():F0}%");
         if (volume is { } target) await session.SetVolumeAsync(target);
         await Task.Delay(300);
         tone.Enabled = true;
@@ -146,11 +186,11 @@ internal static class Program
         var finished = await Task.WhenAny(closed.Task, Task.Delay(TimeSpan.FromSeconds(seconds)));
         if (finished == closed.Task)
         {
-            Print($"OTURUM ERKEN KAPANDI: {closed.Task.Result} ({session.PacketsSent} paket)");
+            Print($"SESSION CLOSED EARLY: {closed.Task.Result} ({session.PacketsSent} packets)");
             return 3;
         }
-        Print($"Tamam: {seconds} sn, {session.PacketsSent} paket, {session.PacketsRetransmitted} yeniden gönderim, " +
-              $"{loopback?.Underruns ?? 0} yetersizlik");
+        Print($"Done: {seconds} s, {session.PacketsSent} packets, {session.PacketsRetransmitted} retransmits, " +
+              $"{loopback?.Underruns ?? 0} underruns");
         await session.StopAsync();
         return 0;
     }

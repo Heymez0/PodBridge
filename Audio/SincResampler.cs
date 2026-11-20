@@ -1,7 +1,7 @@
 namespace PodBridge.Audio;
 
-/// <summary>Kaiser pencereli polifaz sinc yeniden örnekleyici. Oran çalışırken değişebilir;
-/// ses kartı saati ile ağ zaman çizelgesi arasındaki kaymayı bu sayede duyulmadan telafi ederiz.</summary>
+/// <summary>Kaiser-windowed polyphase sinc resampler. The ratio can change while running,
+/// which lets us absorb drift between the sound card clock and the network timeline inaudibly.</summary>
 public sealed class SincResampler
 {
     private const int Taps = 32;
@@ -59,7 +59,7 @@ public sealed class SincResampler
         _count++;
     }
 
-    /// <summary>Girdi yettiği kadar çıktı üretir. step: girdi örneği / çıktı örneği.</summary>
+    /// <summary>Produces as much output as the input allows. step: input samples per output sample.</summary>
     public int Pull(Span<float> interleavedOutput, double step)
     {
         int produced = 0;

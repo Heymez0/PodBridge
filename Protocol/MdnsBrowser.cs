@@ -11,8 +11,8 @@ public sealed record AirPlayDevice(string Id, string Name, string Model, string 
     public bool IsHomePod => Model.StartsWith("AudioAccessory", StringComparison.Ordinal);
 }
 
-/// <summary>_airplay._tcp hizmetini tek seferlik mDNS sorgusuyla bulur. Sorgu rastgele kaynak portundan
-/// gittiği için cihazlar doğrudan bu porta yanıt verir; 5353 portunu paylaşmak gerekmez.</summary>
+/// <summary>Finds _airplay._tcp services with one-shot mDNS queries. The query is sent from a random source port,
+/// so devices reply to that port directly and there is no need to share port 5353.</summary>
 public static class MdnsBrowser
 {
     private const string ServiceName = "_airplay._tcp.local";
@@ -93,7 +93,7 @@ public static class MdnsBrowser
         return ms.ToArray();
     }
 
-    /// <summary>Yanıttaki tüm kayıtları (ek kayıtlar dâhil) toplayıp eksiksiz cihazları döndürür.</summary>
+    /// <summary>Collects every record in the reply (additional records included) and returns the complete devices.</summary>
     internal static List<AirPlayDevice> Parse(ReadOnlySpan<byte> message)
     {
         var result = new List<AirPlayDevice>();
@@ -152,7 +152,7 @@ public static class MdnsBrowser
         }
         catch (Exception ex) when (ex is ArgumentOutOfRangeException or IndexOutOfRangeException or FormatException)
         {
-            // Bozuk paket: o ana kadar okunanlarla devam.
+            // Malformed packet: keep what was parsed so far.
         }
 
         foreach (string instance in ptrs)
@@ -191,7 +191,7 @@ public static class MdnsBrowser
         int guard = 0;
         while (true)
         {
-            if (++guard > 128) throw new FormatException("DNS adı çok uzun");
+            if (++guard > 128) throw new FormatException("DNS name too long");
             int length = message[cursor];
             if (length == 0)
             {

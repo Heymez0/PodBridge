@@ -3,8 +3,8 @@ using System.Security.Cryptography;
 
 namespace PodBridge.Protocol;
 
-/// <summary>HAP çerçevesi: [2 bayt LE uzunluk][şifreli veri][16 bayt etiket].
-/// Ek veri uzunluk baytlarıdır, nonce her yönde ayrı artan 64 bit sayaçtır.</summary>
+/// <summary>HAP frame: [2-byte LE length][ciphertext][16-byte tag].
+/// The length bytes are the associated data; the nonce is a separate 64-bit counter per direction.</summary>
 public sealed class SecureFrames : IDisposable
 {
     private const int MaxChunk = 1024;
@@ -42,7 +42,7 @@ public sealed class SecureFrames : IDisposable
         return output[..pos];
     }
 
-    /// <summary>Gelen baytları biriktirir, tamamlanan çerçevelerin düz metnini döndürür.</summary>
+    /// <summary>Buffers incoming bytes and returns the plaintext of every completed frame.</summary>
     public byte[] Open(ReadOnlySpan<byte> cipher)
     {
         _pending.AddRange(cipher);

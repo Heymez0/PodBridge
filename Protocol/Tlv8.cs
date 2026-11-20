@@ -1,6 +1,6 @@
 namespace PodBridge.Protocol;
 
-/// <summary>HomeKit TLV8: 255 baytı aşan değerler aynı etiketle parçalanır.</summary>
+/// <summary>HomeKit TLV8: values longer than 255 bytes are split into consecutive items with the same tag.</summary>
 public static class Tlv8
 {
     public const byte Method = 0x00, Salt = 0x02, PublicKey = 0x03, Proof = 0x04,

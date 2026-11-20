@@ -10,10 +10,11 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>PodBridge</RootNamespace>
     <AssemblyName>PodBridge</AssemblyName>
-    <Version>1.0.0</Version>
+    <Version>2.0.0</Version>
     <Product>PodBridge</Product>
-    <Description>Windows sesini HomePod'a aktarır</Description>
+    <Description>Streams Windows audio to HomePod</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>

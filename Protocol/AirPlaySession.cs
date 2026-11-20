@@ -11,11 +11,11 @@ namespace PodBridge.Protocol;
 
 public enum SessionCloseReason
 {
-    /// <summary>Bizim isteğimizle kapandı.</summary>
+    /// <summary>Closed at our request.</summary>
     Local,
-    /// <summary>Cihaz bağlantıyı düzgünce kapattı; genelde başka bir cihaz HomePod'u devraldı.</summary>
+    /// <summary>The device closed the connection cleanly; usually another device took over the HomePod.</summary>
     DeviceClosed,
-    /// <summary>Ağ hatası veya cihaz yanıt vermiyor.</summary>
+    /// <summary>Network error or the device stopped responding.</summary>
     Network,
 }
 
@@ -23,14 +23,14 @@ public sealed class FirewallBlockedException(string message) : Exception(message
 
 public sealed class PairingRejectedException(string message) : Exception(message);
 
-public sealed class RtspException(string step, int code) : Exception($"{step} reddedildi ({code})")
+public sealed class RtspException(string step, int code) : Exception($"{step} rejected ({code})")
 {
     public int Code { get; } = code;
 }
 
 public interface IPcmSource
 {
-    /// <summary>44100 Hz stereo 16 bit örneklerle doldurur. Ses yoksa sessizlik yazar, bloklamaz.</summary>
+    /// <summary>Fills the span with 44100 Hz stereo 16-bit samples. Writes silence when nothing is playing; never blocks.</summary>
     void Read(Span<short> interleaved);
 }
 
@@ -39,8 +39,8 @@ public sealed record SessionOptions(
     string DeviceId,
     int LatencyFrames);
 
-/// <summary>Tek bir AirPlay 2 gerçek zamanlı ses oturumu. Eşleştirme geçicidir (HAP transient),
-/// PIN veya kalıcı anahtar gerekmez. Protokol adımları için bkz. NOTICE.</summary>
+/// <summary>A single AirPlay 2 realtime audio session. Pairing is transient (HAP transient),
+/// so no PIN or long-term keys are needed. See NOTICE for where the protocol steps come from.</summary>
 public sealed class AirPlaySession : IDisposable
 {
     public const int SampleRate = 44100;
@@ -88,8 +88,8 @@ public sealed class AirPlaySession : IDisposable
     private string _localIp = "";
     private byte[] _audioKey = [];
 
-    // Zaman tabanı: duvar saati bir kez okunur, sonrası monoton sayaçtan gelir.
-    // Windows saat eşitlemesi oturum ortasında zaman çizelgesini kaydıramaz.
+    // Time base: the wall clock is read once, everything after comes from the monotonic counter,
+    // so a Windows clock sync in the middle of a session cannot shift the timeline.
     private readonly long _baseTicks = Stopwatch.GetTimestamp();
     private readonly ulong _baseNtp = ToNtp(DateTime.UtcNow);
 
@@ -102,7 +102,7 @@ public sealed class AirPlaySession : IDisposable
 
     public event Action<SessionCloseReason, string>? Closed;
 
-    /// <summary>HomePod'un SETUP yanıtında bildirdiği, paket varışından sese kadar geçen süre.</summary>
+    /// <summary>Time from packet arrival to sound, as reported by the HomePod in its SETUP reply.</summary>
     public long? ReceiverLatencyMs { get; private set; }
 
     public long PacketsSent => Volatile.Read(ref _packetsSent);
@@ -123,7 +123,7 @@ public sealed class AirPlaySession : IDisposable
     {
         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         socket.Bind(new IPEndPoint(IPAddress.Any, 0));
-        // Windows, ICMP "port kapalı" iletisini sonraki alımda hata olarak verir; kapatılır.
+        // Windows reports an ICMP "port unreachable" as an error on the next receive; turn that off.
         const int SioUdpConnReset = unchecked((int)0x9800000C);
         socket.IOControl(SioUdpConnReset, [0], null);
         return socket;
@@ -131,7 +131,7 @@ public sealed class AirPlaySession : IDisposable
 
     private static int PortOf(Socket socket) => ((IPEndPoint)socket.LocalEndPoint!).Port;
 
-    // ---------------------------------------------------------------- bağlantı
+    // ---------------------------------------------------------------- connection
 
     public async Task ConnectAsync(CancellationToken ct)
     {
@@ -142,8 +142,8 @@ public sealed class AirPlaySession : IDisposable
         _controlStream = _control.GetStream();
         _localIp = ((IPEndPoint)_control.Client.LocalEndPoint!).Address.ToString();
         _ = Task.Run(ReadControlLoop);
-        StartBackground(TimingLoop, "AirPlay zamanlama");
-        StartBackground(ControlLoop, "AirPlay kontrol");
+        StartBackground(TimingLoop, "AirPlay timing");
+        StartBackground(ControlLoop, "AirPlay control");
 
         await PairAsync().ConfigureAwait(false);
 
@@ -154,7 +154,7 @@ public sealed class AirPlaySession : IDisposable
         await OpenEventChannelAsync(setup).ConfigureAwait(false);
 
         var record = await RtspAsync("RECORD", Uri).ConfigureAwait(false);
-        _log($"RECORD yanıtı: {record.Code}");
+        _log($"RECORD reply: {record.Code}");
 
         await SetupStreamAsync().ConfigureAwait(false);
     }
@@ -165,28 +165,28 @@ public sealed class AirPlaySession : IDisposable
     {
         var m2 = await PairPostAsync(Tlv8.Encode(
             (Tlv8.Method, [0x00]), (Tlv8.State, [0x01]), (Tlv8.Flags, [0x10]))).ConfigureAwait(false);
-        if (m2.TryGetValue(Tlv8.Error, out var e1)) throw new PairingRejectedException($"M2 hata {e1[0]}");
+        if (m2.TryGetValue(Tlv8.Error, out var e1)) throw new PairingRejectedException($"M2 error {e1[0]}");
 
         var srp = new SrpClient();
         if (!srp.Process("3939", m2[Tlv8.Salt], m2[Tlv8.PublicKey]))
-            throw new PairingRejectedException("Geçersiz SRP parametresi");
+            throw new PairingRejectedException("Invalid SRP parameters");
 
         var m4 = await PairPostAsync(Tlv8.Encode(
             (Tlv8.State, [0x03]), (Tlv8.PublicKey, srp.PublicA), (Tlv8.Proof, srp.ProofM1))).ConfigureAwait(false);
-        if (m4.TryGetValue(Tlv8.Error, out var e2)) throw new PairingRejectedException($"M4 hata {e2[0]}");
+        if (m4.TryGetValue(Tlv8.Error, out var e2)) throw new PairingRejectedException($"M4 error {e2[0]}");
         if (!m4.TryGetValue(Tlv8.Proof, out var proof) || !srp.VerifyServerProof(proof))
-            throw new PairingRejectedException("Cihazın eşleştirme kanıtı doğrulanamadı");
+            throw new PairingRejectedException("Could not verify the device's pairing proof");
 
         var secret = srp.SessionKey;
         _audioKey = secret[..32];
         _controlFrames = new SecureFrames(
             Derive(secret, "Control-Salt", "Control-Write-Encryption-Key"),
             Derive(secret, "Control-Salt", "Control-Read-Encryption-Key"));
-        // Olay kanalı ters yöndedir, bu yüzden okuma ve yazma anahtarları yer değiştirir.
+        // The event channel runs in the reverse direction, so the read and write keys are swapped.
         _eventFrames = new SecureFrames(
             Derive(secret, "Events-Salt", "Events-Read-Encryption-Key"),
             Derive(secret, "Events-Salt", "Events-Write-Encryption-Key"));
-        _log("Eşleştirme tamam, kontrol kanalı şifreli");
+        _log("Pairing complete, control channel encrypted");
     }
 
     private static byte[] Derive(byte[] secret, string salt, string info) =>
@@ -199,8 +199,10 @@ public sealed class AirPlaySession : IDisposable
                                        ("Connection", "keep-alive"), ("X-Apple-HKP", "4")).ConfigureAwait(false);
         if (response.Code is 403 or 470)
             throw new PairingRejectedException(
-                $"HomePod eşleştirmeyi reddetti ({response.Code}). Ev uygulamasında " +
-                "Ev Ayarları > Hoparlörler ve TV > Erişime İzin Ver seçeneğini kontrol edin.");
+                Ui.L.T($"The HomePod refused pairing ({response.Code}). In the Home app, check " +
+                       "Home Settings > Speakers & TV > Allow Speaker & TV Access.",
+                       $"HomePod eşleştirmeyi reddetti ({response.Code}). Ev uygulamasında " +
+                       "Ev Ayarları > Hoparlörler ve TV > Erişime İzin Ver seçeneğini kontrol et."));
         Require("pair-setup", response);
         return Tlv8.Decode(response.Body);
     }
@@ -234,12 +236,12 @@ public sealed class AirPlaySession : IDisposable
         }
         catch (TimeoutException) when (Volatile.Read(ref _timingRequests) == 0)
         {
-            // HomePod, yanıttan önce saat eşitlemesi ister. Bu istek hiç ulaşmadıysa suçlu güvenlik duvarıdır.
-            throw new FirewallBlockedException("HomePod'un zamanlama paketleri bilgisayara ulaşmıyor.");
+            // The HomePod syncs its clock with us before replying. If that request never arrived, the firewall is to blame.
+            throw new FirewallBlockedException("The HomePod's timing packets are not reaching this computer.");
         }
-        Require("SETUP (oturum)", response);
+        Require("SETUP (session)", response);
         var plist = BPlist.Decode(response.Body) as Dictionary<string, object?> ?? [];
-        _log($"Oturum SETUP tamam: {string.Join(", ", plist.Keys)}");
+        _log($"Session SETUP complete: {string.Join(", ", plist.Keys)}");
         return plist;
     }
 
@@ -284,20 +286,20 @@ public sealed class AirPlaySession : IDisposable
         }
         catch (TimeoutException) when (Volatile.Read(ref _timingRequests) == 0)
         {
-            throw new FirewallBlockedException("HomePod'un zamanlama paketleri bilgisayara ulaşmıyor.");
+            throw new FirewallBlockedException("The HomePod's timing packets are not reaching this computer.");
         }
-        Require("SETUP (akış)", response);
+        Require("SETUP (stream)", response);
 
         var plist = BPlist.Decode(response.Body) as Dictionary<string, object?>;
         var stream = (plist?.GetValueOrDefault("streams") as List<object?>)?.FirstOrDefault() as Dictionary<string, object?>;
         if (stream?.GetValueOrDefault("dataPort") is not long dataPort || dataPort == 0)
-            throw new IOException("HomePod veri portu bildirmedi");
+            throw new IOException("The HomePod did not report a data port");
         long controlPort = stream.GetValueOrDefault("controlPort") as long? ?? dataPort;
 
         _audioSocket.Connect(new IPEndPoint(_host, (int)dataPort));
         _remoteControl = new IPEndPoint(_host, (int)controlPort);
         ReceiverLatencyMs = stream.GetValueOrDefault("arrivalToRenderLatencyMs") as long?;
-        _log($"Akış SETUP tamam: veri={dataPort} kontrol={controlPort} cihaz gecikmesi={ReceiverLatencyMs} ms");
+        _log($"Stream SETUP complete: data={dataPort} control={controlPort} device latency={ReceiverLatencyMs} ms");
     }
 
     private static void Require(string step, RtspResponse response)
@@ -343,7 +345,7 @@ public sealed class AirPlaySession : IDisposable
         }
 
         var finished = await Task.WhenAny(pending.Task, Task.Delay(ResponseTimeoutMs)).ConfigureAwait(false);
-        if (finished != pending.Task) throw new TimeoutException($"{method} {uri} yanıtsız kaldı");
+        if (finished != pending.Task) throw new TimeoutException($"{method} {uri} got no reply");
         return await pending.Task.ConfigureAwait(false);
     }
 
@@ -368,7 +370,7 @@ public sealed class AirPlaySession : IDisposable
         lock (_pendingLock)
         {
             while (_pending.TryDequeue(out var waiter))
-                waiter.TrySetException(new IOException("Kontrol bağlantısı kapandı"));
+                waiter.TrySetException(new IOException("Control connection closed"));
         }
         Shutdown(reason, detail);
     }
@@ -406,8 +408,8 @@ public sealed class AirPlaySession : IDisposable
         }
     }
 
-    // HomePod olay kanalından POST /command gönderir; yanıtsız kalırsa 30 saniye içinde oturumu kapatır.
-    // Yanıt mümkün olan en yalın hâliyle kalmalı: fazladan başlık sesi kesiyor.
+    // The HomePod sends POST /command on the event channel and closes the session within 30 seconds if unanswered.
+    // Keep the reply as bare as possible: extra headers silence the audio.
     private async Task ReadEventLoop()
     {
         var buffer = new byte[8192];
@@ -422,7 +424,7 @@ public sealed class AirPlaySession : IDisposable
                 plain.Write(_eventFrames!.Open(buffer.AsSpan(0, read)));
                 while (TryTakeRequest(plain, out var cseq, out var firstLine))
                 {
-                    _log($"Olay: {firstLine}");
+                    _log($"Event: {firstLine}");
                     var reply = "RTSP/1.0 200 OK\r\nServer: AirTunes/550.10\r\n" +
                                 (cseq != null ? $"CSeq: {cseq}\r\n" : "") + "\r\n";
                     await stream.WriteAsync(_eventFrames.Seal(Encoding.ASCII.GetBytes(reply))).ConfigureAwait(false);
@@ -430,7 +432,7 @@ public sealed class AirPlaySession : IDisposable
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { _log($"Olay kanalı: {ex.Message}"); }
+        catch (Exception ex) { _log($"Event channel: {ex.Message}"); }
     }
 
     private static bool TryTakeRequest(MemoryStream plain, out string? cseq, out string firstLine)
@@ -485,7 +487,7 @@ public sealed class AirPlaySession : IDisposable
                 BinaryPrimitives.WriteUInt64BigEndian(reply.AsSpan(24), now);
                 _timingSocket.SendTo(reply, from);
                 if (Interlocked.Increment(ref _timingRequests) == 1)
-                    _log("HomePod saat eşitlemesi başladı");
+                    _log("HomePod clock sync started");
             }
             catch (SocketException) { }
             catch (ObjectDisposedException) { return; }
@@ -526,14 +528,14 @@ public sealed class AirPlaySession : IDisposable
         }
     }
 
-    // ---------------------------------------------------------------- ses
+    // ---------------------------------------------------------------- audio
 
     public void StartStreaming(IPcmSource source)
     {
         _audioThread = new Thread(() => AudioLoop(source))
         {
             IsBackground = true,
-            Name = "AirPlay ses",
+            Name = "AirPlay audio",
             Priority = ThreadPriority.Highest,
         };
         _audioThread.Start();
@@ -596,7 +598,7 @@ public sealed class AirPlaySession : IDisposable
                 }
 
                 try { _audioSocket.Send(packet); }
-                catch (SocketException) { }   // Geçici ağ hatası; geri besleme döngüsü kalıcı olanı yakalar.
+                catch (SocketException) { }   // Transient network error; the feedback loop catches persistent ones.
 
                 first = false;
                 seq++;
@@ -604,7 +606,7 @@ public sealed class AirPlaySession : IDisposable
                 Interlocked.Increment(ref _packetsSent);
             }
 
-            // Bilgisayar uzun süre durduysa (uyku gibi) yakalamaya çalışmak yerine zaman çizelgesini atlat.
+            // If the computer stalled for a long time (sleep, for example), skip ahead instead of trying to catch up.
             if (target - framesSent > SampleRate)
                 framesSent = target / FramesPerPacket * FramesPerPacket;
 
@@ -657,13 +659,13 @@ public sealed class AirPlaySession : IDisposable
         }
     }
 
-    /// <summary>0..100 yüzdesini AirPlay'in -30..0 dB aralığına çevirir; 0 sessizdir.</summary>
+    /// <summary>Maps 0..100 percent onto AirPlay's -30..0 dB range; 0 is mute.</summary>
     public async Task SetVolumeAsync(double percent)
     {
         double db = percent < 0.5 ? -144.0 : (percent * 3.0 - 300.0) / 10.0;
         var body = Encoding.ASCII.GetBytes("volume: " + db.ToString("F6", CultureInfo.InvariantCulture));
         var response = await SendAsync("SET_PARAMETER", Uri, "RTSP/1.0", "text/parameters", body).ConfigureAwait(false);
-        if (response.Code != 200) _log($"Ses seviyesi reddedildi: {response.Code}");
+        if (response.Code != 200) _log($"Volume rejected: {response.Code}");
     }
 
     public async Task<double?> GetVolumePercentAsync()
@@ -678,7 +680,7 @@ public sealed class AirPlaySession : IDisposable
         return db <= -30 ? 0 : Math.Clamp((db + 30) * 100 / 30, 0, 100);
     }
 
-    // ---------------------------------------------------------------- zaman
+    // ---------------------------------------------------------------- time
 
     private static ulong ToNtp(DateTime utc)
     {
@@ -696,7 +698,7 @@ public sealed class AirPlaySession : IDisposable
         return _baseNtp + (seconds << 32) + (remainder << 32) / (ulong)Stopwatch.Frequency;
     }
 
-    // ---------------------------------------------------------------- kapanış
+    // ---------------------------------------------------------------- shutdown
 
     private void Shutdown(SessionCloseReason reason, string detail)
     {
@@ -710,7 +712,7 @@ public sealed class AirPlaySession : IDisposable
         _control.Dispose();
         _controlFrames?.Dispose();
         _eventFrames?.Dispose();
-        _log($"Oturum kapandı: {reason} {detail}");
+        _log($"Session closed: {reason} {detail}");
         Closed?.Invoke(reason, detail);
     }
 

@@ -2,10 +2,11 @@ using System.Numerics;
 using System.Security.Cryptography;
 using PodBridge.Audio;
 using PodBridge.Protocol;
+using PodBridge.Ui;
 
 namespace PodBridge;
 
-/// <summary>Donanım gerektirmeyen birim sınamaları: PodBridge --selftest</summary>
+/// <summary>Unit tests that need no hardware: PodBridge --selftest</summary>
 internal static class SelfTest
 {
     private static int _failures;
@@ -20,13 +21,14 @@ internal static class SelfTest
         ResamplerPreservesTone();
         MdnsParsesResponse();
         LatencyPresets();
-        Console.WriteLine(_failures == 0 ? "TÜM SINAMALAR GEÇTİ" : $"{_failures} SINAMA BAŞARISIZ");
+        StatusEndpoint();
+        Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TESTS FAILED");
         return _failures == 0 ? 0 : 1;
     }
 
     private static void Check(string name, bool ok)
     {
-        Console.WriteLine($"{(ok ? "geçti " : "KALDI ")} {name}");
+        Console.WriteLine($"{(ok ? "pass" : "FAIL")} {name}");
         if (!ok) _failures++;
     }
 
@@ -51,14 +53,14 @@ internal static class SelfTest
 
         var actual = new byte[Alac.FrameSize(samples.Length)];
         int written = Alac.Encode(samples, actual);
-        Check("ALAC bit düzeni", written == expected.Length && actual.AsSpan().SequenceEqual(expected));
+        Check("ALAC bit layout", written == expected.Length && actual.AsSpan().SequenceEqual(expected));
     }
 
     private static void BPlistRoundTrip()
     {
         var encoded = BPlist.Encode(new Dictionary<string, object>
         {
-            ["name"] = "Çalışma Odası",
+            ["name"] = "Café Speaker",
             ["port"] = 53180,
             ["large"] = 3_000_000_000L,
             ["flag"] = true,
@@ -67,27 +69,27 @@ internal static class SelfTest
         });
         var decoded = BPlist.Decode(encoded) as Dictionary<string, object?>;
         var stream = (decoded?["streams"] as List<object?>)?[0] as Dictionary<string, object?>;
-        Check("bplist gidiş dönüş",
-              decoded?["name"] as string == "Çalışma Odası" && decoded["port"] as long? == 53180
+        Check("bplist round trip",
+              decoded?["name"] as string == "Café Speaker" && decoded["port"] as long? == 53180
               && decoded["large"] as long? == 3_000_000_000L && decoded["flag"] as bool? == true
               && (decoded["key"] as byte[])?.Length == 3 && stream?["type"] as long? == 96);
 
         bool rejected = false;
         try { BPlist.Decode(new byte[64]); }
         catch (FormatException) { rejected = true; }
-        Check("bozuk bplist reddi", rejected);
+        Check("malformed bplist rejected", rejected);
     }
 
     private static void Tlv8Fragments()
     {
         var big = RandomNumberGenerator.GetBytes(384);
         var decoded = Tlv8.Decode(Tlv8.Encode((Tlv8.State, [3]), (Tlv8.PublicKey, big), (Tlv8.Proof, new byte[64])));
-        Check("TLV8 parçalama", decoded[Tlv8.PublicKey].AsSpan().SequenceEqual(big) && decoded[Tlv8.State][0] == 3);
+        Check("TLV8 fragmentation", decoded[Tlv8.PublicKey].AsSpan().SequenceEqual(big) && decoded[Tlv8.State][0] == 3);
     }
 
     private static void SrpAgreesWithServer()
     {
-        // Sunucu tarafını burada hesaplayıp iki tarafın aynı anahtara ulaştığını doğrular.
+        // Computes the server side here and checks that both sides reach the same key.
         var salt = RandomNumberGenerator.GetBytes(16);
         var inner = SHA512.HashData("Pair-Setup:3939"u8);
         var x = new BigInteger(SHA512.HashData([.. salt, .. inner]), isUnsigned: true, isBigEndian: true);
@@ -110,7 +112,7 @@ internal static class SelfTest
         var u = new BigInteger(SHA512.HashData([.. Pad(a), .. Pad(b)]), isUnsigned: true, isBigEndian: true);
         var s = BigInteger.ModPow(a * BigInteger.ModPow(verifier, u, SrpClient.N) % SrpClient.N, serverSecret, SrpClient.N);
         var expectedKey = SHA512.HashData(s.ToByteArray(isUnsigned: true, isBigEndian: true));
-        Check("SRP ortak anahtar", processed && client.SessionKey.AsSpan().SequenceEqual(expectedKey));
+        Check("SRP shared key", processed && client.SessionKey.AsSpan().SequenceEqual(expectedKey));
     }
 
     private static void SecureFramesRoundTrip()
@@ -123,14 +125,14 @@ internal static class SelfTest
         var wire = sender.Seal(message);
         var first = receiver.Open(wire.AsSpan(0, 1500));
         var second = receiver.Open(wire.AsSpan(1500));
-        Check("şifreli çerçeve, parçalı okuma", first.Concat(second).SequenceEqual(message));
+        Check("encrypted frames, split reads", first.Concat(second).SequenceEqual(message));
 
         bool rejected = false;
         var tampered = sender.Seal("merhaba"u8);
         tampered[4] ^= 1;
         try { receiver.Open(tampered); }
         catch (CryptographicException) { rejected = true; }
-        Check("değiştirilmiş çerçeve reddi", rejected);
+        Check("tampered frame rejected", rejected);
     }
 
     private static void ResamplerPreservesTone()
@@ -147,7 +149,7 @@ internal static class SelfTest
                 produced += resampler.Pull(output.AsSpan(produced * 2), InputRate / OutputRate);
         }
 
-        // Giriş ve çıkış geçişlerinden uzak bölgede 1 kHz gücü ile kalan gücü ayırır.
+        // Away from the start and end transients, separates 1 kHz power from everything else.
         int start = 4410, count = 22050;
         double re = 0, im = 0, power = 0;
         for (int i = start; i < start + count; i++)
@@ -162,21 +164,40 @@ internal static class SelfTest
         double residual = Math.Max(power - tone, 1e-12);
         double snr = 10 * Math.Log10(tone / residual);
         double amplitude = 2 * Math.Sqrt(re * re + im * im) / count;
-        Console.WriteLine($"       yeniden örnekleme: {produced} kare, genlik {amplitude:F4}, SNR {snr:F0} dB");
-        Check("yeniden örnekleme", produced is > 43000 and < 44200 && Math.Abs(amplitude - 1) < 0.01 && snr > 80);
+        Console.WriteLine($"       resampling: {produced} frames, amplitude {amplitude:F4}, SNR {snr:F0} dB");
+        Check("resampling", produced is > 43000 and < 44200 && Math.Abs(amplitude - 1) < 0.01 && snr > 80);
+    }
+
+    private static void StatusEndpoint()
+    {
+        using var server = new StatusServer(() => new { streaming = true, latencyMs = 420 }, port: 0);
+        string Get(string path, string host)
+        {
+            using var tcp = new System.Net.Sockets.TcpClient("127.0.0.1", server.Port);
+            var stream = tcp.GetStream();
+            stream.Write(System.Text.Encoding.ASCII.GetBytes($"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n"));
+            return new StreamReader(stream).ReadToEnd();
+        }
+        var ok = Get("/status", $"127.0.0.1:{server.Port}");
+        Check("status endpoint", ok.StartsWith("HTTP/1.1 200") && ok.Contains("\"latencyMs\":420") && !ok.Contains("Access-Control"));
+        Check("status endpoint rejects foreign Host", Get("/status", "evil.example:80").StartsWith("HTTP/1.1 403"));
     }
 
     private static void LatencyPresets()
     {
+        L.Current = UiLanguage.English;
         var settings = new Settings { LowBufferMs = 100, Latency = LatencyMode.Low };
-        Check("ön ayar tampon karesi", settings.LatencyFrames() == 4410);
-        Check("gecikme tahmini ölçüm noktaları",
+        Check("preset buffer frames", settings.LatencyFrames() == 4410);
+        Check("latency estimate at measured points",
               Settings.EstimateEndToEndMs(50) == 270 && Settings.EstimateEndToEndMs(120) == 420
               && Settings.EstimateEndToEndMs(200) == 570 && Settings.EstimateEndToEndMs(400) == 838);
-        Check("gecikme tahmini ara ve üst değer",
+        Check("latency estimate between and above points",
               Settings.EstimateEndToEndMs(160) == 495 && Settings.EstimateEndToEndMs(1000) == 1438);
         settings.Latency = LatencyMode.Stable;
-        Check("gecikme etiketi", settings.LatencyLabel() == "yaklaşık 1,4 sn");
+        Check("latency label", settings.LatencyLabel() == "about 1.4 s");
+        L.Current = UiLanguage.Turkish;
+        Check("Turkish latency label", settings.LatencyLabel() == "yaklaşık 1,4 sn");
+        L.Current = UiLanguage.English;
     }
 
     private static void MdnsParsesResponse()
@@ -211,7 +232,7 @@ internal static class SelfTest
             return inner.ToArray();
         }
 
-        const string Instance = "Çalışma Odası._airplay._tcp.local";
+        const string Instance = "Café Speaker._airplay._tcp.local";
         ms.Write([0, 0, 0x84, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
         Record("_airplay._tcp.local", 12, EncodedName(Instance));
         Record(Instance, 33, [0, 0, 0, 0, 0x1B, 0x58, .. EncodedName("yatak.local")]);
@@ -221,6 +242,6 @@ internal static class SelfTest
         Record("yatak.local", 1, [192, 168, 1, 50]);
 
         var device = MdnsBrowser.Parse(ms.ToArray()).SingleOrDefault();
-        Check("mDNS yanıtı", device is { Name: "Çalışma Odası", Address: "192.168.1.50", Port: 7000, IsHomePod: true });
+        Check("mDNS reply", device is { Name: "Café Speaker", Address: "192.168.1.50", Port: 7000, IsHomePod: true });
     }
 }

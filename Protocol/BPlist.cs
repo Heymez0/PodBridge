@@ -3,8 +3,8 @@ using System.Text;
 
 namespace PodBridge.Protocol;
 
-/// <summary>AirPlay SETUP için en küçük bplist00 kodlayıcı ve çözücü.
-/// Değerler: string, long, bool, byte[], List&lt;object?&gt;, Dictionary&lt;string, object?&gt;.</summary>
+/// <summary>Minimal bplist00 encoder and decoder for AirPlay SETUP.
+/// Values: string, long, bool, byte[], List&lt;object?&gt;, Dictionary&lt;string, object?&gt;.</summary>
 public static class BPlist
 {
     private const int MaxObjects = 4096;
@@ -40,7 +40,7 @@ public static class BPlist
         return ms.ToArray();
     }
 
-    // Her nesne, üst nesneden sonra tabloya girer; kök her zaman 0. indekstedir.
+    // Each object enters the table after its parent; the root is always at index 0.
     private static void Collect(object value, List<object> objects)
     {
         objects.Add(value);
@@ -121,7 +121,7 @@ public static class BPlist
                 for (int n = 0; n < dict.Count; n++) WriteBE(s, IndexAfter(dict, n, objects), refSize);
                 break;
             default:
-                throw new ArgumentException($"Desteklenmeyen tür: {value.GetType()}");
+                throw new ArgumentException($"Unsupported type: {value.GetType()}");
         }
     }
 
@@ -148,7 +148,7 @@ public static class BPlist
     public static object? Decode(byte[] data)
     {
         if (data.Length < 40 || !data.AsSpan(0, 8).SequenceEqual("bplist00"u8))
-            throw new FormatException("bplist00 değil");
+            throw new FormatException("Not a bplist00");
 
         var trailer = data.AsSpan(data.Length - 32);
         int offsetSize = trailer[6], refSize = trailer[7];
@@ -157,7 +157,7 @@ public static class BPlist
         long table = BinaryPrimitives.ReadInt64BigEndian(trailer[24..]);
         if (offsetSize is < 1 or > 8 || refSize is < 1 or > 8 || count is <= 0 or > MaxObjects
             || top < 0 || top >= count || table < 8 || table + count * offsetSize > data.Length - 32)
-            throw new FormatException("Geçersiz bplist üstbilgisi");
+            throw new FormatException("Invalid bplist trailer");
 
         return ReadObject(data, table, offsetSize, refSize, count, top, 0);
     }
@@ -171,9 +171,9 @@ public static class BPlist
 
     private static object? ReadObject(byte[] d, long table, int offSize, int refSize, long count, long index, int depth)
     {
-        if (depth > MaxDepth || index < 0 || index >= count) throw new FormatException("Geçersiz bplist başvurusu");
+        if (depth > MaxDepth || index < 0 || index >= count) throw new FormatException("Invalid bplist reference");
         long pos = ReadBE(d.AsSpan((int)(table + index * offSize)), offSize);
-        if (pos < 8 || pos >= table) throw new FormatException("Geçersiz bplist konumu");
+        if (pos < 8 || pos >= table) throw new FormatException("Invalid bplist offset");
 
         byte marker = d[pos];
         int kind = marker >> 4, info = marker & 0xF;
@@ -185,7 +185,7 @@ public static class BPlist
             int size = 1 << (d[p] & 0xF);
             long c = ReadBE(d.AsSpan((int)p + 1), size);
             p += 1 + size;
-            if (c < 0 || c > d.Length) throw new FormatException("Geçersiz bplist uzunluğu");
+            if (c < 0 || c > d.Length) throw new FormatException("Invalid bplist length");
             return c;
         }
 
@@ -195,7 +195,7 @@ public static class BPlist
             case 0x1:
                 {
                     int size = 1 << info;
-                    if (size > 8) throw new FormatException("Çok büyük tamsayı");
+                    if (size > 8) throw new FormatException("Integer too large");
                     return ReadBE(d.AsSpan((int)p), size);
                 }
             case 0x2:

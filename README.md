@@ -1,64 +1,245 @@
 # PodBridge
 
-Windows'un tüm sesini HomePod ve HomePod mini'ye AirPlay 2 ile aktarır. Sürücü kurmaz, görev çubuğunda çalışır.
+PodBridge streams everything you hear on a Windows PC to a HomePod or HomePod mini over AirPlay 2.
+It lives in the system tray, needs no audio driver, and comes with a browser extension that keeps
+video in sync with the delayed audio.
 
-## Kullanım
+The interface is available in English and Turkish.
 
-1. `PodBridge.exe` dosyasını aç. Görev çubuğunun sağında bir simge belirir.
-2. Simgeye tıkla ve HomePod'unu seç. Bir kez daha tıklayınca bağlantı kapanır.
-3. `Ctrl+Alt+P` son kullanılan HomePod'u açıp kapatır.
+## Contents
 
-Bağlıyken Windows ses tuşları ve görev çubuğundaki ses kaydırıcısı doğrudan HomePod'u kontrol eder.
-Bağlantıyı kapatınca bilgisayarın eski ses seviyesi ve sessizlik durumu geri gelir.
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Using PodBridge](#using-podbridge)
+- [Latency](#latency)
+- [Browser extension: video sync](#browser-extension-video-sync)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [Building from source](#building-from-source)
+- [Command-line tools](#command-line-tools)
+- [Known limitations](#known-limitations)
+- [Changelog](#changelog)
 
-İlk bağlantıda Windows bir kez yönetici onayı ister. HomePod saat eşitleme paketlerini UDP ile gönderdiği için
-yalnızca bu program ve yalnızca yerel ağ için bir güvenlik duvarı kuralı eklenir.
+## Features
 
-## Gecikme ayarları
+- **System-wide audio.** Whatever plays on the default Windows output goes to the HomePod. Captured with WASAPI loopback, so no virtual audio driver is installed.
+- **AirPlay 2 realtime streaming.** Lossless ALAC, encrypted end to end like Apple's own senders. Pairing is transient: no PIN, nothing stored on the HomePod.
+- **Feels built in.** While streaming, the computer's speakers are muted and the Windows volume keys and taskbar slider control the HomePod volume. Everything is restored when you disconnect.
+- **Low latency presets.** Low, Balanced and Stable presets, each with an editable buffer length.
+- **Video sync extension.** For Chrome, Edge, Brave, Opera and Firefox. Delays video by the audio latency so lips and sound line up.
+- **Resilient.** Reconnects after network drops and sleep, follows changes of the default audio device, and backs off politely when an iPhone takes over the HomePod.
+- **Automatic discovery.** HomePods are found over mDNS; devices seen before stay in the list even when they are briefly offline.
+- **Tray app.** Windows 11 style panel, light and dark theme, `Ctrl+Alt+P` hotkey, optional start with Windows and auto-connect.
 
-Ölçüm: Windows çıkışına verilen tık sesiyle HomePod mini'den çıkan ses arası, bilgisayar mikrofonuyla, Wi-Fi üzerinde.
+## Requirements
 
-| Ayar | Tampon | Uçtan uca gecikme |
-|---|---|---|
-| Düşük | 120 ms | yaklaşık 420 ms (ölçüldü) |
-| Dengeli | 200 ms | yaklaşık 570 ms (ölçüldü) |
-| Kararlı | 1000 ms | yaklaşık 1,4 sn (tahmin) |
+- Windows 10 or 11, 64-bit
+- HomePod or HomePod mini on the same local network
+- In the Home app, **Home Settings > Speakers & TV > Allow Speaker & TV Access** must allow your computer, for example **Everyone on the Same Network**
+- No .NET installation needed; the release is self-contained
 
-Tampon sürelerini panelde "Gecikme" başlığının yanındaki **Düzenle** ile değiştirebilirsin (50 ile 2000 ms arası).
-Etkin ayarın süresi değişirse akış kısa süreliğine yeniden kurulur.
+## Installation
 
-Ses kesilir veya cızırtı olursa bir üst ayara geç. 50 ms tamponla yaklaşık 270 ms ölçüldü ama cızırtı duyuldu:
-HomePod paketleri en az 70 ms önceden istiyor ve Wi-Fi gecikmesi dalgalanıyor.
+1. Download `PodBridge.exe` from the latest release.
+2. Put it in a permanent folder, for example `C:\Users\<you>\PodBridge`. The firewall permission is tied to this path; if you move the file later, PodBridge asks for the permission again.
+3. Run it. Windows SmartScreen may warn because the app is not signed: choose **More info > Run anyway**.
+4. On first launch PodBridge adds itself to startup and to the Start menu. Both can be undone from the panel or with **Uninstall…** in the tray menu.
+5. The first time you connect, Windows shows a UAC prompt. PodBridge adds one inbound firewall rule: UDP only, for this program only, from the local subnet only. The HomePod needs it to send clock sync and retransmit requests.
 
-## Davranış
+If **Smart App Control** is turned on, Windows blocks unsigned programs that have no reputation, and PodBridge will not start.
 
-- Ağ koparsa veya bilgisayar uykudan dönerse bağlantı kendiliğinden yeniden kurulur.
-- iPhone gibi başka bir cihaz HomePod'u devralırsa PodBridge geri almak için uğraşmaz, bildirim gösterir.
-- Windows'ta varsayılan ses aygıtı değişirse yakalama yeni aygıta geçer.
-- Uygulama çökerse bilgisayar hoparlörünün durumu bir sonraki açılışta geri yüklenir.
+## Using PodBridge
 
-## Bilinen sınırlar
+Click the tray icon to open the panel.
 
-- Windows ses listesinde ayrı bir aygıt olarak görünmez; bunun için imzalı çekirdek sürücüsü gerekir. Varsayılan çıkışa giden ses yakalanır.
-- Çift HomePod stereo eşleşmesi ve çoklu oda sınanmadı.
-- Yalnızca HomePod listelenir. Apple TV ve Mac PIN gerektiren başka bir eşleştirme kullanır.
-- Görüntüyle tam eşzamanlı değildir. Oyun ve video için hissedilir bir gecikme kalır.
-- Uygulama imzasızdır; Windows ilk açılışta uyarı gösterebilir.
+| Control | What it does |
+|---|---|
+| HomePod list | Click a HomePod to stream to it, click it again to stop. |
+| Volume | HomePod volume. The Windows volume keys do the same while streaming. |
+| Latency: Low / Balanced / Stable | Buffer size of the stream. Takes effect immediately; an active stream reconnects for a moment. |
+| Latency: Edit | Change the buffer length of each preset (50 to 2000 ms). |
+| Mute computer speakers | Mutes the local speakers while streaming and ties the Windows volume to the HomePod. |
+| Start with Windows | Adds or removes PodBridge from startup. |
+| Connect automatically at startup | Reconnects to the last HomePod when PodBridge starts. |
+| Language | English or Türkçe. The default follows the Windows display language. |
 
-## Geliştirme
+The tray icon shows a blue dot while streaming and an orange dot when something needs attention.
+`Ctrl+Alt+P` connects to or disconnects from the last used HomePod.
 
-.NET 10 SDK gerekir.
+Right-click the tray icon for **Open log folder**, **Uninstall…** and **Exit**.
+
+## Latency
+
+AirPlay buffers audio on the speaker, so sound always arrives a little late. PodBridge lets you trade buffer size for robustness.
+
+End-to-end latency was measured with a microphone: a click played on the Windows output, timed until it came out of a HomePod mini on Wi-Fi.
+
+| Preset | Buffer (default) | End-to-end latency | Notes |
+|---|---|---|---|
+| Low | 120 ms | about 420 ms | Measured. Clean on the test network. |
+| Balanced | 200 ms | about 570 ms | Measured. |
+| Stable | 1000 ms | about 1.4 s | Estimated from the trend, not measured. |
+
+- At 50 ms the latency was about 270 ms but crackling was heard. The HomePod asks for packets 70 ms ahead and Wi-Fi jitter adds to that, so buffers below about 100 ms are risky.
+- Your numbers depend on the network. Wired Ethernet on the PC side usually helps.
+- PodBridge's own capture buffer is about 30 ms; most of the latency is the HomePod's buffer and processing.
+
+## Browser extension: video sync
+
+Because AirPlay audio arrives late, video in the browser runs ahead of the sound. Apple devices hide this by delaying the picture. The extension does the same: while PodBridge streams to a HomePod, it shows each video frame as late as the audio, then turns itself off when streaming stops.
+
+The extension follows the browser language (English or Turkish).
+
+### Install
+
+The extension is in the `BrowserExtension` folder (also attached to the release as a zip).
+
+**Chrome, Edge, Brave, Opera**
+
+1. Open the extensions page: `chrome://extensions`, `edge://extensions`, `brave://extensions` or `opera://extensions`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and select the `BrowserExtension` folder.
+4. Pin the extension from the puzzle icon so its button stays visible.
+
+**Firefox 132 or newer**
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on…** and select `manifest.json` in the `BrowserExtension` folder.
+3. Click the extension button and choose **Allow access to local PodBridge**.
+
+A temporary add-on is removed when Firefox closes. Permanent installation needs signing by Mozilla.
+
+Safari is not supported.
+
+### Use
+
+Open the extension popup to see the status, turn sync on or off, and fine-tune the delay by ±300 ms if the picture is still slightly ahead of or behind the sound.
+
+### How the extension gets the delay
+
+PodBridge serves its state at `http://127.0.0.1:47389/status`:
+
+```json
+{ "app": "PodBridge", "streaming": true, "latencyMs": 420, "device": "Living Room" }
+```
+
+- Bound to `127.0.0.1`, so it is reachable only from this computer.
+- No CORS headers, so web pages cannot read it; only the extension can.
+- Requests with a foreign `Host` header are rejected, which blocks DNS rebinding.
+- `latencyMs` is the end-to-end estimate for the active preset, interpolated from the measurements above.
+
+### Extension limitations
+
+- Netflix, Disney+ and other DRM-protected video cannot be copied by the browser, so it plays normally without delay.
+- Captions and player controls are not delayed.
+- If a site makes the `<video>` element itself fullscreen (most sites fullscreen the player container instead), the delay stops while fullscreen.
+
+## How it works
+
+```
+Windows audio ──► WASAPI loopback ──► resampler ──► ring buffer ──► AirPlay 2 sender ──► HomePod
+ (default output)   (+ silent stream     (sinc, drift      (30 ms)       (ALAC, ChaCha20,
+                     to keep it alive)    compensation)                    RTP over UDP)
+```
+
+**Audio capture** (`Audio/LoopbackSource.cs`). WASAPI loopback on the default render device. A silent render stream keeps the capture running when nothing plays. Any channel layout is downmixed to stereo, resampled to 44.1 kHz with a 32-tap Kaiser-windowed polyphase sinc filter (104 dB SNR in the self-test) and dithered to 16 bits. The sample rate is trimmed by up to ±0.3% to absorb drift between the sound card clock and the network timeline.
+
+**AirPlay 2 session** (`Protocol/AirPlaySession.cs`):
+
+1. HAP transient pair-setup (SRP-6a with the fixed PIN 3939, 3072-bit group, SHA-512).
+2. The RTSP control channel switches to ChaCha20-Poly1305 framing; keys come from HKDF-SHA512 over the SRP session key.
+3. `GET /info`, session `SETUP` (binary plist, NTP timing), event channel, `RECORD`, stream `SETUP` (realtime type 96, ALAC).
+4. Audio: 352-frame uncompressed ALAC packets, encrypted with the first 32 bytes of the pairing secret, sent over RTP/UDP and paced from a high-resolution timer on an MMCSS "Pro Audio" thread.
+5. Sync packets every second, an NTP timing responder, a retransmit backlog, `POST /feedback` keep-alives and answers on the encrypted event channel keep the session healthy.
+
+**Speakers and volume** (`Audio/LocalOutputControl.cs`). The local endpoint is muted and its volume slider is mapped to the HomePod volume. Loopback capture is unaffected by the endpoint mute or volume (verified with `--probe-volume`). The previous state is saved to disk and restored even after a crash.
+
+**Discovery** (`Protocol/MdnsBrowser.cs`). One-shot mDNS queries for `_airplay._tcp` from a random port on every active interface; only HomePods (`AudioAccessory*` models) are listed.
+
+**Reconnection** (`BridgeEngine.cs`). Backoff of 1, 2, 4, 8, 15 and 30 seconds, with a fresh mDNS lookup each time in case the address changed. If the HomePod closes the session after it has been running, PodBridge assumes another device took over and does not fight back.
+
+**Video sync** (`BrowserExtension/delay-core.js`). An opaque canvas is placed over each video. On every animation frame the current video frame is copied with `createImageBitmap`, queued with a due time of now plus the delay, and drawn on the canvas when due. The video stays visible underneath because browsers stop presenting frames of a transparent video.
+
+### Project layout
+
+| Path | Contents |
+|---|---|
+| `Program.cs` | Entry point, single-instance handling, command-line tools |
+| `BridgeEngine.cs` | Session lifecycle, reconnects, volume |
+| `Settings.cs` | Settings, latency presets and estimates, log |
+| `StatusServer.cs` | Local status endpoint for the extension |
+| `FirewallRule.cs` | Firewall rule through an elevated copy of the app |
+| `Protocol/` | AirPlay session, SRP, TLV8, binary plist, ALAC, encrypted framing, mDNS |
+| `Audio/` | Loopback capture, resampler, local speaker control |
+| `Ui/` | Tray controller, panel, preset editor, icons, translations |
+| `BrowserExtension/` | Video sync extension (Manifest V3) |
+| `tools/delay-test.html` | Measures the extension's delay core in a browser |
+| `SelfTest.cs`, `LatencyMeter.cs` | Unit tests and measurement tools |
+
+## Troubleshooting
+
+**"Firewall permission needed".** The HomePod's timing packets cannot reach the PC. Click **Allow** in the panel and accept the UAC prompt. The network profile does not matter; the rule covers all profiles but only the local subnet.
+
+**"The HomePod refused pairing".** Check **Allow Speaker & TV Access** in the Home app (see Requirements).
+
+**No HomePod found.** The PC and HomePod must be on the same network and subnet. Some routers block mDNS between Wi-Fi and Ethernet, or between bands.
+
+**Crackling or dropouts.** Switch to Balanced or Stable, or raise the Low buffer with **Edit**. The log records underruns and retransmits every 30 seconds.
+
+**Sound comes from the PC speakers as well.** Turn on **Mute computer speakers**.
+
+**Logs.** `%LOCALAPPDATA%\PodBridge\log.txt`, or **Open log folder** in the tray menu.
+
+## Building from source
+
+Requires the .NET 10 SDK.
 
 ```bash
 dotnet publish PodBridge.csproj -c Release -o dist
 ```
 
-Sınama komutları:
+The output is a single self-contained `PodBridge.exe` (about 50 MB, compressed, ReadyToRun).
+
+To regenerate the icons after changing `Ui/Glyphs.cs`:
 
 ```bash
-PodBridge --selftest
-PodBridge --test --ip 192.168.1.50 --seconds 30 --latency 2205 --loopback
-PodBridge --measure --ip 192.168.1.50 --latency 2205 --volume 25
+PodBridge --write-icon app.ico
+PodBridge --write-extension-icons BrowserExtension/icons
 ```
 
-Günlük: `%LOCALAPPDATA%\PodBridge\log.txt`
+## Command-line tools
+
+| Command | Purpose |
+|---|---|
+| `PodBridge --selftest` | Unit tests: ALAC bit layout, binary plist, TLV8, SRP, encrypted framing, resampler quality, mDNS parsing, latency presets, status endpoint |
+| `PodBridge --test --ip <ip> --seconds 30 --latency 5292 [--loopback] [--tone 440] [--volume 25]` | Stream a tone or the PC audio to a HomePod without the UI |
+| `PodBridge --measure --ip <ip> --latency 5292 --volume 25` | Measure end-to-end latency with the microphone (data stays in memory) |
+| `PodBridge --sweep --ip <ip> --values 200,150,120,100 --seconds 15` | Play the PC audio with a series of buffers to find the smallest clean one by ear |
+| `PodBridge --probe-volume` | Check that loopback capture is independent of the endpoint volume |
+| `PodBridge --audio-status` | List output devices and the apps playing on them |
+| `PodBridge --render-ui <png> [--language tr]` | Render the panel to an image |
+
+`--latency` is in frames at 44.1 kHz (5292 frames = 120 ms).
+
+## Known limitations
+
+- PodBridge does not appear as a separate device in the Windows sound list; that would need a signed kernel driver. It captures whatever goes to the default output.
+- Only HomePods are listed. Apple TV and Mac receivers need PIN pairing, which is not implemented.
+- Stereo pairs and multi-room playback have not been tested.
+- Games and other apps without A/V sync still feel the latency.
+- The executable is not code-signed.
+
+## Changelog
+
+### 2.0.0
+
+- **Browser extension for video sync** (Chrome, Edge, Brave, Opera, Firefox) and the local status endpoint it reads.
+- **English and Turkish interface**, switchable in the panel; the extension follows the browser language.
+- **Editable latency presets** with live latency estimates. Low is now 120 ms (was 50 ms, which crackled).
+- **New look**: HomePod mini app and tray icons, theme-aware tray icon with status dot, themed preset editor with dark title bar.
+- Source code, comments and documentation are in English.
+
+### 1.0.0
+
+- First release: AirPlay 2 realtime streaming to HomePod, WASAPI loopback capture, tray panel, reconnects, speaker muting and volume mapping, firewall setup.

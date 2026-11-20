@@ -3,9 +3,9 @@ using System.Diagnostics;
 
 namespace PodBridge;
 
-/// <summary>HomePod saat eşitleme ve yeniden gönderim isteklerini UDP ile bilgisayara yollar.
-/// Bunun için yalnızca bu program ve yalnızca yerel ağ için bir gelen kuralı gerekir.
-/// Kural, UAC onayıyla yükseltilmiş kendi kopyamız tarafından Windows Güvenlik Duvarı API'si ile eklenir.</summary>
+/// <summary>The HomePod sends clock sync and retransmit requests to the computer over UDP.
+/// That needs an inbound rule for this program only, from the local network only.
+/// The rule is added through the Windows Firewall API by an elevated copy of ourselves, after UAC consent.</summary>
 internal static class FirewallRule
 {
     public const string ApplyArgument = "--firewall-apply";
@@ -17,7 +17,7 @@ internal static class FirewallRule
     private const int ActionAllow = 1;
     private const int AllProfiles = 0x7FFFFFFF;
 
-    /// <summary>Başarıda null, aksi hâlde kullanıcıya gösterilecek nedeni döndürür.</summary>
+    /// <summary>Returns null on success, otherwise the reason to show the user.</summary>
     public static string? Request() => RunElevated(ApplyArgument);
 
     public static string? RequestRemoval() => RunElevated(RemoveArgument);
@@ -34,11 +34,11 @@ internal static class FirewallRule
             });
             process!.WaitForExit();
             if (process.ExitCode == 0) return null;
-            return File.Exists(resultFile) ? File.ReadAllText(resultFile) : $"Çıkış kodu {process.ExitCode}";
+            return File.Exists(resultFile) ? File.ReadAllText(resultFile) : $"Exit code {process.ExitCode}";
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
-            return "Onay penceresi reddedildi.";
+            return "The consent prompt was declined.";
         }
         catch (Exception ex)
         {
@@ -50,7 +50,7 @@ internal static class FirewallRule
         }
     }
 
-    /// <summary>Yükseltilmiş kopyada çalışır.</summary>
+    /// <summary>Runs in the elevated copy.</summary>
     public static int ApplyElevated(bool add, string? resultFile)
     {
         try
@@ -61,7 +61,7 @@ internal static class FirewallRule
             {
                 dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule")!)!;
                 rule.Name = RuleName;
-                rule.Description = "HomePod'dan gelen saat eşitleme ve yeniden gönderim paketleri";
+                rule.Description = "Clock sync and retransmit packets from HomePod";
                 rule.ApplicationName = Environment.ProcessPath;
                 rule.Protocol = ProtocolUdp;
                 rule.Direction = DirectionIn;
@@ -101,7 +101,7 @@ internal static class FirewallRule
             rule.RemoteAddresses = "LocalSubnet";
             rule.Profiles = AllProfiles;
             rule.Enabled = true;
-            return $"kural sayısı={count}, kural nesnesi hazırlandı (eklenmedi), var={Exists()}";
+            return $"rule count={count}, rule object built (not added), exists={Exists()}";
         }
         catch (Exception ex)
         {

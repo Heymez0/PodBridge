@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Win32;
 using PodBridge.Audio;
 using PodBridge.Protocol;
+using PodBridge.Ui;
 
 namespace PodBridge;
 
@@ -11,13 +12,13 @@ public enum BridgeState
     Connecting,
     Streaming,
     Reconnecting,
-    /// <summary>Başka bir cihaz HomePod'u devraldı; kullanıcı istemeden geri alınmaz.</summary>
+    /// <summary>Another device took over the HomePod; we do not take it back unless the user asks.</summary>
     TakenOver,
     NeedsFirewall,
     Failed,
 }
 
-/// <summary>Yakalama, oturum ve yeniden bağlanmayı yönetir. Olaylar arka plan iş parçacığında gelir.</summary>
+/// <summary>Runs capture, the session and reconnects. Events arrive on background threads.</summary>
 public sealed class BridgeEngine : IDisposable
 {
     private static readonly int[] BackoffSeconds = [1, 2, 4, 8, 15, 30];
@@ -59,7 +60,7 @@ public sealed class BridgeEngine : IDisposable
     {
         State = state;
         Detail = detail;
-        Log.Write($"Durum: {state} {detail}");
+        Log.Write($"State: {state} {detail}");
         Changed?.Invoke();
     }
 
@@ -89,7 +90,7 @@ public sealed class BridgeEngine : IDisposable
     private async Task RunAsync(AirPlayDevice device, Task previous, CancellationToken ct)
     {
         try { await previous.ConfigureAwait(false); }
-        catch (Exception ex) { Log.Write($"Önceki oturum: {ex.Message}"); }
+        catch (Exception ex) { Log.Write($"Previous session: {ex.Message}"); }
         if (ct.IsCancellationRequested) return;
 
         var source = new LoopbackSource(Log.Write);
@@ -137,14 +138,14 @@ public sealed class BridgeEngine : IDisposable
                             var ended = await Task.WhenAny(closed.Task, Task.Delay(StatsInterval, ct)).ConfigureAwait(false);
                             if (ended == closed.Task) break;
                             ct.ThrowIfCancellationRequested();
-                            Log.Write($"Akış: {session.PacketsSent} paket, {session.PacketsRetransmitted} yeniden gönderim, " +
-                                      $"{source.Underruns} yetersizlik, tampon {source.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
+                            Log.Write($"Stream: {session.PacketsSent} packets, {session.PacketsRetransmitted} retransmits, " +
+                                      $"{source.Underruns} underruns, buffer {source.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
                         }
                         (reason, closeDetail) = await closed.Task.ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
-                        // TEARDOWN, using bloğu oturumu kapatmadan gitmeli; yoksa HomePod bir süre meşgul kalır.
+                        // TEARDOWN has to go out before the using block disposes the session, or the HomePod stays busy for a while.
                         DetachLocalOutput();
                         _session = null;
                         await session.StopAsync().ConfigureAwait(false);
@@ -152,10 +153,10 @@ public sealed class BridgeEngine : IDisposable
                     }
                     if (reason == SessionCloseReason.DeviceClosed && DateTime.UtcNow - startedAt > MinimumStableUptime)
                     {
-                        SetState(BridgeState.TakenOver, "HomePod başka bir cihaza geçti");
+                        SetState(BridgeState.TakenOver, L.T("The HomePod switched to another device", "HomePod başka bir cihaza geçti"));
                         return;
                     }
-                    Log.Write($"Oturum koptu: {reason} {closeDetail}");
+                    Log.Write($"Session dropped: {reason} {closeDetail}");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -174,13 +175,13 @@ public sealed class BridgeEngine : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    Log.Write($"Bağlantı hatası: {ex.GetType().Name}: {ex.Message}");
+                    Log.Write($"Connection error: {ex.GetType().Name}: {ex.Message}");
                 }
 
                 _session = null;
                 DetachLocalOutput();
                 int wait = BackoffSeconds[Math.Min(attempt++, BackoffSeconds.Length - 1)];
-                SetState(BridgeState.Reconnecting, $"{wait} sn içinde yeniden denenecek");
+                SetState(BridgeState.Reconnecting, L.T($"retrying in {wait} s", $"{wait} sn içinde yeniden denenecek"));
                 await Task.Delay(TimeSpan.FromSeconds(wait), ct).ConfigureAwait(false);
             }
         }
@@ -205,7 +206,7 @@ public sealed class BridgeEngine : IDisposable
         if (session != null) await session.StopAsync().ConfigureAwait(false);
     }
 
-    /// <summary>DHCP adresi değişmiş olabileceğinden yeniden denemelerde mDNS ile güncel adresi ararız.</summary>
+    /// <summary>The DHCP address may have changed, so retries look the device up again over mDNS.</summary>
     private static async Task<AirPlayDevice> ResolveAsync(AirPlayDevice device, bool refresh, CancellationToken ct)
     {
         if (!refresh) return device;
@@ -214,7 +215,7 @@ public sealed class BridgeEngine : IDisposable
         return devices.FirstOrDefault(d => d.Id == device.Id) ?? device;
     }
 
-    // ---------------------------------------------------------------- ses seviyesi ve hoparlör
+    // ---------------------------------------------------------------- volume and speakers
 
     private void OnCaptureDevice(string deviceId)
     {
@@ -234,7 +235,7 @@ public sealed class BridgeEngine : IDisposable
             }
             catch (Exception ex)
             {
-                Log.Write($"Hoparlör kontrolü kurulamadı: {ex.Message}");
+                Log.Write($"Could not take over the speakers: {ex.Message}");
             }
         }).Wait();
     }
@@ -266,7 +267,7 @@ public sealed class BridgeEngine : IDisposable
         if (!fromWindows && _localAttached)
             await Task.Run(() => _localOutput.Reflect(percent)).ConfigureAwait(false);
 
-        // Kaydırıcı sürüklenirken istek birikmesin; en son değer her zaman gönderilir.
+        // Do not pile up requests while the slider is dragged; the latest value is always sent.
         _lastVolumeSent = DateTime.UtcNow;
         if (!await _volumeGate.WaitAsync(0).ConfigureAwait(false)) return;
         try
@@ -280,7 +281,7 @@ public sealed class BridgeEngine : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Write($"Ses seviyesi gönderilemedi: {ex.Message}");
+            Log.Write($"Could not send volume: {ex.Message}");
         }
         finally
         {
@@ -291,8 +292,8 @@ public sealed class BridgeEngine : IDisposable
     private void OnPowerChanged(object sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.Resume) return;
-        // Uykudan sonra oturum ölü olur; beklemeden yeni oturum için kapatıyoruz.
-        Log.Write("Uykudan dönüldü");
+        // After sleep the session is dead; close it now so a new one starts without waiting.
+        Log.Write("Resumed from sleep");
         _session?.Dispose();
     }
 
@@ -300,7 +301,7 @@ public sealed class BridgeEngine : IDisposable
     {
         SystemEvents.PowerModeChanged -= OnPowerChanged;
         try { DisconnectAsync().Wait(TimeSpan.FromSeconds(3)); }
-        catch (AggregateException ex) { Log.Write($"Kapanış: {ex.InnerException?.Message}"); }
+        catch (AggregateException ex) { Log.Write($"Shutdown: {ex.InnerException?.Message}"); }
         _localOutput.Dispose();
     }
 }

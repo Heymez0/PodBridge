@@ -6,15 +6,15 @@ using PodBridge.Protocol;
 
 namespace PodBridge.Audio;
 
-/// <summary>Varsayılan çıkış aygıtına giden sesi WASAPI loopback ile yakalar ve 44100 Hz stereo 16 bit'e çevirir.
-/// Sürücü gerektirmez. Aygıt değişince veya kaybolunca kendini yeniden başlatır.</summary>
+/// <summary>Captures what goes to the default output device with WASAPI loopback and converts it to 44100 Hz stereo 16-bit.
+/// No driver needed. Restarts itself when the device changes or disappears.</summary>
 public sealed class LoopbackSource : IPcmSource, IDisposable
 {
     private const int RingFrames = AirPlaySession.SampleRate;
-    private const int TargetFrames = 1323;          // 30 ms: yakalama (10 ms) ve gönderim (8 ms) dalgalanmasını örter
-    private const int MaxFrames = 8820;             // 200 ms üstü birikirse (uyku, kopma) fazlası atılır
-    private const int ExcessFrames = 1764;          // Ortalama hedefin 40 ms üstünde kalırsa da atılır
-    private const double MaxRateTrim = 0.003;       // En fazla ±%0,3; perde değişimi duyulmaz
+    private const int TargetFrames = 1323;          // 30 ms: covers capture (10 ms) and send (8 ms) jitter
+    private const int MaxFrames = 8820;             // anything above 200 ms (sleep, dropouts) is discarded
+    private const int ExcessFrames = 1764;          // also discarded when the average stays 40 ms above target
+    private const double MaxRateTrim = 0.003;       // at most ±0.3%; the pitch change is inaudible
     private const double TrimPerFrame = 2.5e-6;
     private const long BufferDuration100Ns = 200_000;
 
@@ -34,21 +34,21 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
     public long Underruns => Volatile.Read(ref _underruns);
     private long _underruns;
 
-    /// <summary>Yakalanan aygıt değişince aygıt kimliğiyle çağrılır.</summary>
+    /// <summary>Raised with the device ID whenever the captured device changes.</summary>
     public event Action<string>? DeviceActive;
 
-    /// <summary>Son 100 ms'deki tepe seviye (0..1); arayüz ve teşhis için.</summary>
+    /// <summary>Peak level over the last 100 ms (0..1), for UI and diagnostics.</summary>
     public float Peak { get; private set; }
 
     public LoopbackSource(Action<string> log)
     {
         _log = log;
-        _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "Ses yakalama", Priority = ThreadPriority.Highest };
+        _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "Audio capture", Priority = ThreadPriority.Highest };
         _thread.SetApartmentState(ApartmentState.MTA);
         _thread.Start();
     }
 
-    // ---------------------------------------------------------------- tüketici tarafı
+    // ---------------------------------------------------------------- consumer side
 
     public void Read(Span<short> interleaved)
     {
@@ -74,7 +74,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         }
         if (available < wanted)
         {
-            // Yetersizlikte küçük parçalar çalmak yerine hedef doluluğa dönene kadar sessizlik veriyoruz.
+            // On underrun, play silence until the target fill is back instead of stuttering through small fragments.
             Interlocked.Increment(ref _underruns);
             _priming = true;
             Volatile.Write(ref _read, read);
@@ -89,7 +89,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         Volatile.Write(ref _read, read + wanted);
     }
 
-    // ---------------------------------------------------------------- üretici tarafı
+    // ---------------------------------------------------------------- producer side
 
     private sealed class EndpointWatcher(ManualResetEventSlim signal) : IMMNotificationClient
     {
@@ -121,7 +121,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
                 }
                 catch (Exception ex) when (ex is COMException or InvalidOperationException or NotSupportedException)
                 {
-                    _log($"Yakalama yeniden başlatılıyor: {ex.Message}");
+                    _log($"Restarting capture: {ex.Message}");
                     _stop.Token.WaitHandle.WaitOne(500);
                 }
             }
@@ -137,13 +137,13 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         var client = device.AudioClient;
         var format = client.MixFormat;
         if (format.BitsPerSample != 32 || (format.Encoding != WaveFormatEncoding.IeeeFloat && format is not WaveFormatExtensible))
-            throw new NotSupportedException($"Beklenmeyen karışım biçimi: {format}");
+            throw new NotSupportedException($"Unexpected mix format: {format}");
 
         client.Initialize(AudioClientShareMode.Shared, AudioClientStreamFlags.Loopback, BufferDuration100Ns, 0, format, Guid.Empty);
         var capture = client.AudioCaptureClient;
 
-        // Hiçbir uygulama ses çalmıyorsa loopback veri üretmez ve zaman çizelgesi boşa düşer.
-        // Aygıta sürekli sessizlik yazmak yakalamayı kesintisiz tutar.
+        // When no app is playing, loopback produces no data and the timeline starves.
+        // Writing silence to the device keeps the capture running continuously.
         using var keepAlive = new WasapiOut(device, AudioClientShareMode.Shared, false, 100);
         keepAlive.Init(new SilenceProvider(format));
         keepAlive.Play();
@@ -157,7 +157,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         using var timer = new NativeTiming.PreciseTimer();
 
         client.Start();
-        _log($"Yakalama: {device.FriendlyName}, {format.SampleRate} Hz, {channels} kanal");
+        _log($"Capturing: {device.FriendlyName}, {format.SampleRate} Hz, {channels} channels");
         DeviceActive?.Invoke(device.ID);
 
         float peak = 0;
@@ -197,7 +197,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
                     smoothedFill += (fill - smoothedFill) * 0.02;
                     if (smoothedFill > TargetFrames + ExcessFrames)
                     {
-                        // Oran düzeltmesi bu birikimi onlarca saniyede eritir; o süre boyunca gecikme taşımak yerine atlıyoruz.
+                        // Rate trimming would take tens of seconds to drain this backlog; skip it instead of carrying the extra latency.
                         _skipBacklog = true;
                         smoothedFill = TargetFrames;
                     }
@@ -231,7 +231,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
                 right = s[1];
                 break;
             default:
-                // Sıralama FL FR C LFE (B/S L R ...). LFE atılır, kazanç taşmayı önleyecek şekilde düşürülür.
+                // Order is FL FR C LFE (B/S L R ...). LFE is dropped and gain is lowered to avoid clipping.
                 float center = s[2] * Center;
                 float backL = channels >= 6 ? s[4] * Center : 0;
                 float backR = channels >= 6 ? s[5] * Center : 0;
@@ -249,8 +249,8 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         long read = Volatile.Read(ref _read);
         int frames = interleaved.Length / 2;
 
-        // Tüketici durmuşsa yeni örnek eklemeyip eskileri bırakmak gecikmeyi sınırlar.
-        // _read yalnızca tüketicide yazılır; burada sadece atlama istenir.
+        // If the consumer has stalled, dropping old samples keeps latency bounded.
+        // _read is only written by the consumer; here we just request a skip.
         if (written - read + frames > MaxFrames) _skipBacklog = true;
 
         for (int i = 0; i < frames; i++)
@@ -262,7 +262,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         Volatile.Write(ref _written, written + frames);
     }
 
-    // 16 bit'e düşerken TPDF dither; tam sessizlikte gürültü eklenmez.
+    // TPDF dither when reducing to 16 bits; no noise is added to digital silence.
     private short ToPcm(float sample)
     {
         if (sample == 0) return 0;

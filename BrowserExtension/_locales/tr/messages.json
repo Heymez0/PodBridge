@@ -1,0 +1,22 @@
+{
+  "extensionName": { "message": "PodBridge Görüntü Eşitleme" },
+  "extensionDescription": { "message": "PodBridge sesi HomePod'a aktarırken videoyu ses kadar geciktirir, dudak ve ses eşleşir." },
+  "popupTitle": { "message": "Görüntü eşitleme" },
+  "statusLoading": { "message": "Durum okunuyor…" },
+  "grantAccess": { "message": "Yerel PodBridge erişimine izin ver" },
+  "syncToggle": { "message": "Videoyu sesle eşitle" },
+  "fineTune": { "message": "İnce ayar" },
+  "fineTuneHint": { "message": "Görüntü sesten önce geliyorsa sağa, sonra geliyorsa sola kaydır." },
+  "drmHint": { "message": "Netflix gibi korumalı videolarda tarayıcı görüntünün geciktirilmesine izin vermez." },
+  "needAccess": { "message": "PodBridge'e erişim izni gerekiyor." },
+  "notRunning": { "message": "PodBridge çalışmıyor." },
+  "notStreaming": { "message": "PodBridge açık, HomePod'a aktarım yok. Video normal oynar." },
+  "delaying": {
+    "message": "$DEVICE$ çalıyor. Video $MS$ ms geciktiriliyor.",
+    "placeholders": { "device": { "content": "$1" }, "ms": { "content": "$2" } }
+  },
+  "syncOff": {
+    "message": "$DEVICE$ çalıyor. Eşitleme kapalı.",
+    "placeholders": { "device": { "content": "$1" } }
+  }
+}

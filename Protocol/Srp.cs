@@ -4,7 +4,7 @@ using System.Text;
 
 namespace PodBridge.Protocol;
 
-/// <summary>HAP eşleştirmesi için SRP-6a istemcisi (RFC 5054 3072 bit, SHA-512).</summary>
+/// <summary>SRP-6a client for HAP pairing (RFC 5054 3072-bit group, SHA-512).</summary>
 public sealed class SrpClient
 {
     private const string Username = "Pair-Setup";
