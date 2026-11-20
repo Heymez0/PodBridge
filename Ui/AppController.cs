@@ -95,6 +95,11 @@ public sealed class AppController : ApplicationContext
         menu.Items.Add(L.T("Open panel", "Paneli aç"), null, (_, _) => _flyout.ShowNearTray());
         menu.Items.Add(L.T("Open log folder", "Günlük klasörünü aç"), null, (_, _) =>
             System.Diagnostics.Process.Start("explorer.exe", Settings.Folder));
+        // Rarely changed, so it lives here instead of the panel. Each language is labeled in its own language.
+        var language = new ToolStripMenuItem(L.T("Language", "Dil"));
+        foreach (var (value, label) in new[] { (UiLanguage.English, "English"), (UiLanguage.Turkish, "Türkçe") })
+            language.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetLanguage(value)) { Checked = L.Current == value });
+        menu.Items.Add(language);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("Uninstall…", "Kaldır…"), null, (_, _) => Uninstall());
         menu.Items.Add(L.T("Exit", "Çıkış"), null, (_, _) => Quit());

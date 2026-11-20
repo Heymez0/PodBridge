@@ -109,7 +109,7 @@ public sealed class FlyoutForm : Form
         float h = Pad + 44;
         h += Math.Max(_app.Devices.Count, 1) * (RowHeight + 4);
         if (_app.Engine.State == BridgeState.NeedsFirewall) h += 72;
-        h += 58 + 8 + 70 + 3 * 36 + 8 + 20 + 26 + Pad;
+        h += 58 + 8 + 70 + 3 * 36 + Pad;
         return (int)S(h);
     }
 
@@ -212,26 +212,6 @@ public sealed class FlyoutForm : Form
         DrawCheck(g, L.T("Mute computer speakers", "Bilgisayar hoparlörünü sustur"), _app.Settings.MuteLocal, x, ref y, w, smallFont, "mute", () => _app.ToggleMuteLocal());
         DrawCheck(g, L.T("Start with Windows", "Windows ile başlat"), _app.AutoStart, x, ref y, w, smallFont, "autostart", () => _app.ToggleAutoStart());
         DrawCheck(g, L.T("Connect automatically at startup", "Açılışta otomatik bağlan"), _app.Settings.AutoConnect, x, ref y, w, smallFont, "autoconnect", () => _app.ToggleAutoConnect());
-
-        using (var pen = new Pen(_line)) g.DrawLine(pen, x, y, x + w, y);
-        y += S(8);
-        // Each language is labeled in its own language so it can be found whatever is currently shown.
-        DrawText(g, L.T("Language", "Dil"), smallFont, _subtext, x, y, w);
-        y += S(20);
-        (UiLanguage Language, string Label)[] languages = [(UiLanguage.English, "English"), (UiLanguage.Turkish, "Türkçe")];
-        float half = w / 2;
-        for (int i = 0; i < languages.Length; i++)
-        {
-            var (language, label) = languages[i];
-            var rect = new RectangleF(x + i * half + (i > 0 ? S(2) : 0), y, half - S(2), S(26));
-            string key = "language:" + i;
-            _hits.Add((rect, () => _app.SetLanguage(language), key));
-            bool on = L.Current == language;
-            Fill(g, on ? _accent : _hoverKey == key ? _cardHover : _card, rect, S(4));
-            var size = g.MeasureString(label, smallFont);
-            using var brush = new SolidBrush(on ? _accentText : _text);
-            g.DrawString(label, smallFont, brush, rect.X + (rect.Width - size.Width) / 2, rect.Y + (rect.Height - size.Height) / 2);
-        }
     }
 
     private string StatusText()

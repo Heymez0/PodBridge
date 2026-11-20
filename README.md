@@ -10,6 +10,10 @@ video in sync with the delayed audio.
 
 The interface is available in English and Turkish.
 
+<p align="center">
+  <img src="docs/panel.png" alt="PodBridge panel" width="360">
+</p>
+
 **[Download the latest release](https://github.com/Heymez0/PodBridge/releases/latest)**: `PodBridge.exe` (Windows 10/11 x64, no .NET needed) and the browser extension zip.
 
 ## Contents
@@ -69,12 +73,12 @@ Click the tray icon to open the panel.
 | Mute computer speakers | Mutes the local speakers while streaming and ties the Windows volume to the HomePod. |
 | Start with Windows | Adds or removes PodBridge from startup. |
 | Connect automatically at startup | Reconnects to the last HomePod when PodBridge starts. |
-| Language | English or Türkçe. The default follows the Windows display language. |
 
 The tray icon shows a blue dot while streaming and an orange dot when something needs attention.
 `Ctrl+Alt+P` connects to or disconnects from the last used HomePod.
 
-Right-click the tray icon for **Open log folder**, **Uninstall…** and **Exit**.
+Right-click the tray icon for **Open log folder**, **Language**, **Uninstall…** and **Exit**.
+The interface language is English or Türkçe; the default follows the Windows display language.
 
 ## Latency
 
@@ -242,7 +246,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 ### 2.0.0
 
 - **Browser extension for video sync** (Chrome, Edge, Brave, Opera, Firefox) and the local status endpoint it reads.
-- **English and Turkish interface**, switchable in the panel; the extension follows the browser language.
+- **English and Turkish interface**, switchable from the tray menu; the extension follows the browser language.
 - **Editable latency presets** with live latency estimates. Low is now 120 ms (was 50 ms, which crackled).
 - **New look**: HomePod mini app and tray icons, theme-aware tray icon with status dot, themed preset editor with dark title bar.
 - Source code, comments and documentation are in English.
