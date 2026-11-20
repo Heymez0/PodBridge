@@ -1,10 +1,20 @@
 # PodBridge
 
+[![Latest release](https://img.shields.io/github/v/release/Heymez0/PodBridge)](https://github.com/Heymez0/PodBridge/releases/latest)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 PodBridge streams everything you hear on a Windows PC to a HomePod or HomePod mini over AirPlay 2.
 It lives in the system tray, needs no audio driver, and comes with a browser extension that keeps
 video in sync with the delayed audio.
 
 The interface is available in English and Turkish.
+
+<p align="center">
+  <img src="docs/panel.png" alt="PodBridge panel in the dark theme" width="380">
+</p>
+
+**[Download the latest release](https://github.com/Heymez0/PodBridge/releases/latest)**: `PodBridge.exe` (Windows 10/11 x64, no .NET needed) and the browser extension zip.
 
 ## Contents
 
@@ -20,6 +30,7 @@ The interface is available in English and Turkish.
 - [Command-line tools](#command-line-tools)
 - [Known limitations](#known-limitations)
 - [Changelog](#changelog)
+- [License and credits](#license-and-credits)
 
 ## Features
 
@@ -63,6 +74,10 @@ Click the tray icon to open the panel.
 | Start with Windows | Adds or removes PodBridge from startup. |
 | Connect automatically at startup | Reconnects to the last HomePod when PodBridge starts. |
 | Language | English or Türkçe. The default follows the Windows display language. |
+
+<p align="center">
+  <img src="docs/panel-tr.png" alt="PodBridge panel with the Turkish interface" width="320">
+</p>
 
 The tray icon shows a blue dot while streaming and an orange dot when something needs attention.
 `Ctrl+Alt+P` connects to or disconnects from the last used HomePod.
@@ -243,3 +258,11 @@ PodBridge --write-extension-icons BrowserExtension/icons
 ### 1.0.0
 
 - First release: AirPlay 2 realtime streaming to HomePod, WASAPI loopback capture, tray panel, reconnects, speaker muting and volume mapping, firewall setup.
+
+## License and credits
+
+PodBridge is released under the [MIT License](LICENSE).
+
+The AirPlay 2 sender was written from scratch in C#, using [airplay2-sender-cpp](https://github.com/akustikrausch/airplay2-sender-cpp) (Apache-2.0) and [pyatv](https://github.com/postlund/pyatv) (MIT) as protocol references; no code was copied. Audio capture uses [NAudio](https://github.com/naudio/NAudio) (MIT). See [NOTICE.txt](NOTICE.txt).
+
+PodBridge is an independent project and is not affiliated with, authorized or endorsed by Apple Inc. AirPlay and HomePod are trademarks of Apple Inc., used only to describe compatibility. PodBridge contains no Apple code, keys or certificates.
