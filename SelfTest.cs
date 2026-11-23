@@ -22,6 +22,7 @@ internal static class SelfTest
         MdnsParsesResponse();
         LatencyPresets();
         StatusEndpoint();
+        NetworkPriorityCalls();
         Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TESTS FAILED");
         return _failures == 0 ? 0 : 1;
     }
@@ -166,6 +167,34 @@ internal static class SelfTest
         double amplitude = 2 * Math.Sqrt(re * re + im * im) / count;
         Console.WriteLine($"       resampling: {produced} frames, amplitude {amplitude:F4}, SNR {snr:F0} dB");
         Check("resampling", produced is > 43000 and < 44200 && Math.Abs(amplitude - 1) < 0.01 && snr > 80);
+    }
+
+    // QoS and Wi-Fi tuning may be refused by Windows (no Wi-Fi, loopback destination); what matters is that the native
+    // calls marshal correctly and never throw into the streaming code.
+    private static void NetworkPriorityCalls()
+    {
+        var messages = new List<string>();
+        bool ok;
+        try
+        {
+            using var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork,
+                System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);
+            socket.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+            using (var qos = new NetworkPriority.QosFlows(messages.Add))
+            {
+                qos.Add(socket, new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 9), NetworkPriority.TrafficType.AudioVideo);
+                qos.Add(socket, new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 9), NetworkPriority.TrafficType.Voice);
+            }
+            using (new NetworkPriority.WifiStreamingMode(messages.Add)) { }
+            ok = true;
+        }
+        catch (Exception ex)
+        {
+            messages.Add(ex.ToString());
+            ok = false;
+        }
+        foreach (var message in messages) Console.WriteLine($"     {message}");
+        Check("network priority calls", ok);
     }
 
     private static void StatusEndpoint()
