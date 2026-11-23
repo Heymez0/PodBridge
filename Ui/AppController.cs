@@ -26,13 +26,18 @@ public sealed class AppController : ApplicationContext
     private Icon _warnIcon = Glyphs.TrayIcon(WarnBadge);
     private BridgeState _lastState;
     private AirPlayDevice? _lastDevice;
+    private readonly System.Windows.Forms.Timer _updateTimer;
+    private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromHours(24);
+    private bool _updateBusy;
+    private Version? _updateReady;
+    private bool _updateWaitAnnounced;
 
     public Settings Settings { get; }
     public BridgeEngine Engine { get; }
     public IReadOnlyList<AirPlayDevice> Devices { get; private set; } = [];
     public bool IsBrowsing { get; private set; }
 
-    public AppController(Settings settings)
+    public AppController(Settings settings, bool afterUpdate = false)
     {
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         Settings = settings;
@@ -87,6 +92,116 @@ public sealed class AppController : ApplicationContext
 
         FirstRun();
         _ = StartupAsync();
+
+        if (afterUpdate)
+            _tray.ShowBalloonTip(4000, "PodBridge", L.T($"Updated to version {Updater.Current}.", $"{Updater.Current} sürümüne güncellendi."), ToolTipIcon.Info);
+        // First check a minute after start, so startup and auto-connect are not slowed down; then hourly ticks
+        // that only go to GitHub once the last check is a day old.
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _updateTimer.Tick += (_, _) =>
+        {
+            _updateTimer.Interval = 3_600_000;
+            if (Settings.AutoUpdate && DateTime.UtcNow - Settings.LastUpdateCheck > UpdateCheckInterval)
+                _ = CheckForUpdatesAsync(userAsked: false);
+        };
+        _updateTimer.Start();
+    }
+
+    // ---------------------------------------------------------------- updates
+
+    private async Task CheckForUpdatesAsync(bool userAsked)
+    {
+        if (_updateBusy) return;
+        _updateBusy = true;
+        try
+        {
+            Settings.LastUpdateCheck = DateTime.UtcNow;
+            Settings.Save();
+            var update = await Task.Run(() => Updater.CheckAsync(CancellationToken.None));
+            if (update == null)
+            {
+                if (userAsked)
+                    _tray.ShowBalloonTip(3000, "PodBridge", L.T($"You have the latest version ({Updater.Current}).", $"En son sürümü kullanıyorsun ({Updater.Current})."), ToolTipIcon.Info);
+                return;
+            }
+            Log.Write($"Update {update.Version} available");
+            if (!await Task.Run(() => Updater.DownloadAsync(update, CancellationToken.None)))
+            {
+                if (userAsked)
+                    _tray.ShowBalloonTip(4000, "PodBridge", L.T("The update could not be verified and was not installed.", "Güncelleme doğrulanamadı, kurulmadı."), ToolTipIcon.Warning);
+                return;
+            }
+            _updateReady = update.Version;
+            RebuildMenu();
+            InstallUpdateWhenIdle(userAsked);
+        }
+        catch (Exception ex)
+        {
+            // Offline, GitHub unreachable or rate limited: try again at the next check.
+            Log.Write($"Update check failed: {ex.Message}");
+            if (userAsked)
+                _tray.ShowBalloonTip(3000, "PodBridge", L.T("Could not reach GitHub to check for updates.", "Güncellemeleri kontrol etmek için GitHub'a ulaşılamadı."), ToolTipIcon.Warning);
+        }
+        finally
+        {
+            _updateBusy = false;
+        }
+    }
+
+    /// <summary>Installs right away unless audio is playing; while streaming it waits for the stream to stop
+    /// (or the next start of PodBridge), so music is never cut off by an update.</summary>
+    private void InstallUpdateWhenIdle(bool userAsked)
+    {
+        if (_updateReady is not { } version) return;
+        bool busy = Engine.State is BridgeState.Streaming or BridgeState.Connecting or BridgeState.Reconnecting
+                    || _flyout.Visible;
+        if (busy && !userAsked)
+        {
+            if (!_updateWaitAnnounced)
+                _tray.ShowBalloonTip(4000, "PodBridge", L.T($"Version {version} is ready. It installs when streaming stops.", $"{version} sürümü hazır. Akış durunca kurulacak."), ToolTipIcon.Info);
+            _updateWaitAnnounced = true;
+            return;
+        }
+        string error;
+        try
+        {
+            if (Updater.TryApply(out error))
+            {
+                Quit();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        Log.Write($"Could not install the update: {error}");
+        _updateReady = null;
+        RebuildMenu();
+        _tray.ShowBalloonTip(5000, "PodBridge", L.T($"Version {version} could not be installed ({error}). Download it from GitHub.", $"{version} sürümü kurulamadı ({error}). GitHub'dan indirebilirsin."), ToolTipIcon.Warning);
+    }
+
+    /// <summary>After streaming stops, waits a little so that picking another HomePod or a quick reconnect is not
+    /// interrupted, then installs if PodBridge is still idle and the panel is closed.</summary>
+    private async void InstallAfterQuietPeriod()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(30));
+        if (_updateReady == null || _flyout.Visible || Engine.State is not (BridgeState.Idle or BridgeState.TakenOver)) return;
+        InstallUpdateWhenIdle(userAsked: false);
+    }
+
+    private void ToggleAutoUpdate()
+    {
+        Settings.AutoUpdate = !Settings.AutoUpdate;
+        Settings.Save();
+        RebuildMenu();
+    }
+
+    private void RebuildMenu()
+    {
+        var old = _tray.ContextMenuStrip;
+        _tray.ContextMenuStrip = BuildMenu();
+        old?.Dispose();
     }
 
     private ContextMenuStrip BuildMenu()
@@ -101,6 +216,15 @@ public sealed class AppController : ApplicationContext
             language.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetLanguage(value)) { Checked = L.Current == value });
         menu.Items.Add(language);
         menu.Items.Add(new ToolStripSeparator());
+        if (_updateReady is { } ready)
+            menu.Items.Add(L.T($"Install version {ready} and restart", $"{ready} sürümünü kur ve yeniden başlat"), null, (_, _) => InstallUpdateWhenIdle(userAsked: true));
+        else
+            menu.Items.Add(L.T("Check for updates", "Güncellemeleri denetle"), null, (_, _) => _ = CheckForUpdatesAsync(userAsked: true));
+        menu.Items.Add(new ToolStripMenuItem(L.T("Update automatically", "Otomatik güncelle"), null, (_, _) => ToggleAutoUpdate())
+        {
+            Checked = Settings.AutoUpdate,
+        });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("Uninstall…", "Kaldır…"), null, (_, _) => Uninstall());
         menu.Items.Add(L.T("Exit", "Çıkış"), null, (_, _) => Quit());
         return menu;
@@ -112,9 +236,7 @@ public sealed class AppController : ApplicationContext
         L.Current = language;
         Settings.Language = language;
         Settings.Save();
-        var old = _tray.ContextMenuStrip;
-        _tray.ContextMenuStrip = BuildMenu();
-        old?.Dispose();
+        RebuildMenu();
         _flyout.Sync();
     }
 
@@ -333,6 +455,7 @@ public sealed class AppController : ApplicationContext
     {
         _tray.Visible = false;
         _browseTimer.Stop();
+        _updateTimer.Stop();
         _hotkeys.Dispose();
         _statusServer?.Dispose();
         Engine.Dispose();
@@ -384,6 +507,8 @@ public sealed class AppController : ApplicationContext
                 _tray.ShowBalloonTip(5000, "PodBridge", Engine.Detail, ToolTipIcon.Warning);
             else if (state == BridgeState.NeedsFirewall)
                 _flyout.ShowNearTray();
+            if (_updateReady != null && Settings.AutoUpdate && state is BridgeState.Idle or BridgeState.TakenOver)
+                InstallAfterQuietPeriod();
             _lastState = state;
             _lastDevice = Engine.Device;
         }

@@ -23,6 +23,7 @@ internal static class SelfTest
         LatencyPresets();
         StatusEndpoint();
         NetworkPriorityCalls();
+        ReleaseParsing();
         Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TESTS FAILED");
         return _failures == 0 ? 0 : 1;
     }
@@ -195,6 +196,24 @@ internal static class SelfTest
         }
         foreach (var message in messages) Console.WriteLine($"     {message}");
         Check("network priority calls", ok);
+    }
+
+    private static void ReleaseParsing()
+    {
+        static string Release(string tag, string assets, bool draft = false) =>
+            $$"""{"tag_name":"{{tag}}","html_url":"https://github.com/x/y/releases/tag/{{tag}}","draft":{{(draft ? "true" : "false")}},"prerelease":false,"assets":[{{assets}}]}""";
+        const string Exe = """{"name":"PodBridge.exe","size":123,"browser_download_url":"https://example.invalid/PodBridge.exe","digest":"sha256:ab12cd"}""";
+        const string Zip = """{"name":"PodBridge-BrowserExtension.zip","size":5,"browser_download_url":"https://example.invalid/x.zip","digest":"sha256:ff"}""";
+        var current = new Version(2, 1, 0);
+
+        var newer = Updater.ParseRelease(Release("v2.2.0", Zip + "," + Exe), current);
+        Check("update: newer release found", newer is { Size: 123, Sha256: "AB12CD" } && newer.Version == new Version(2, 2, 0));
+        Check("update: same or older version ignored",
+              Updater.ParseRelease(Release("v2.1.0", Exe), current) == null && Updater.ParseRelease(Release("v2.0.0", Exe), current) == null);
+        Check("update: release without exe or digest ignored",
+              Updater.ParseRelease(Release("v3.0.0", Zip), current) == null
+              && Updater.ParseRelease(Release("v3.0.0", Exe.Replace("\"digest\":\"sha256:ab12cd\"", "\"digest\":null")), current) == null);
+        Check("update: draft ignored", Updater.ParseRelease(Release("v3.0.0", Exe, draft: true), current) == null);
     }
 
     private static void StatusEndpoint()

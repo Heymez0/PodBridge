@@ -25,6 +25,7 @@ The interface is available in English and Turkish.
 - [Latency](#latency)
 - [Browser extension: video sync](#browser-extension-video-sync)
 - [How it works](#how-it-works)
+- [Updates](#updates)
 - [Troubleshooting](#troubleshooting)
 - [Building from source](#building-from-source)
 - [Command-line tools](#command-line-tools)
@@ -79,7 +80,7 @@ Click the tray icon to open the panel.
 The tray icon shows a blue dot while streaming and an orange dot when something needs attention.
 `Ctrl+Alt+P` connects to or disconnects from the last used HomePod.
 
-Right-click the tray icon for **Open log folder**, **Language**, **Uninstall…** and **Exit**.
+Right-click the tray icon for **Open log folder**, **Language**, **Check for updates**, **Update automatically**, **Uninstall…** and **Exit**.
 The interface language is English or Türkçe; the default follows the Windows display language.
 
 ## Latency
@@ -190,6 +191,20 @@ Windows audio ──► WASAPI loopback ──► resampler ──► ring buffe
 | `tools/delay-test.html` | Measures the extension's delay core in a browser |
 | `SelfTest.cs`, `LatencyMeter.cs` | Unit tests and measurement tools |
 
+## Updates
+
+PodBridge 2.1.0 and newer update themselves:
+
+1. Once a day (first check a minute after start) PodBridge asks GitHub for the latest release.
+2. If it is newer, `PodBridge.exe` is downloaded to `%LOCALAPPDATA%\PodBridge\update` and checked against the SHA-256 digest GitHub lists for the file. A download that does not match is deleted.
+3. The update is installed only when nothing is streaming and the panel is closed: right away, 30 seconds after streaming stops, or at the next start of PodBridge. PodBridge restarts and shows a notification.
+
+The new version replaces the exe in the same folder, so the firewall rule and startup entry keep working. If the folder is not writable (for example under Program Files), PodBridge says so and you can download the release by hand.
+
+Use **Check for updates** in the tray menu to check now, and **Update automatically** to turn it off. The browser extension does not update itself; reload it from the release zip when its version changes.
+
+Versions before 2.1.0 have no updater: download 2.1.0 once by hand.
+
 ## Troubleshooting
 
 **"Firewall permission needed".** The HomePod's timing packets cannot reach the PC. Click **Allow** in the panel and accept the UAC prompt. The network profile does not matter; the rule covers all profiles but only the local subnet.
@@ -225,7 +240,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 | Command | Purpose |
 |---|---|
-| `PodBridge --selftest` | Unit tests: ALAC bit layout, binary plist, TLV8, SRP, encrypted framing, resampler quality, mDNS parsing, latency presets, status endpoint |
+| `PodBridge --selftest` | Unit tests: ALAC bit layout, binary plist, TLV8, SRP, encrypted framing, resampler quality, mDNS parsing, latency presets, status endpoint, QoS and Wi-Fi calls, release parsing |
 | `PodBridge --test --ip <ip> --seconds 30 --latency 5292 [--loopback] [--tone 440] [--volume 25]` | Stream a tone or the PC audio to a HomePod without the UI |
 | `PodBridge --measure --ip <ip> --latency 5292 --volume 25` | Measure end-to-end latency with the microphone (data stays in memory) |
 | `PodBridge --sweep --ip <ip> --values 200,150,120,100 --seconds 15` | Play the PC audio with a series of buffers to find the smallest clean one by ear |
@@ -245,14 +260,19 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 ## Changelog
 
+### 2.1.0
+
+- **Automatic updates.** PodBridge checks GitHub once a day, verifies the download against GitHub's SHA-256 digest and installs it when nothing is streaming. Can be turned off in the tray menu.
+- **Fewer dropouts on Wi-Fi**: stream packets are tagged for the Wi-Fi priority queues, and Wi-Fi background scans on the PC are paused while streaming.
+- **Sturdier sessions**: RTSP replies matched by CSeq, a failed volume query no longer drops the stream, audio and capture threads recover from errors instead of closing the app.
+- The language switch moved from the panel to the tray menu.
+
 ### 2.0.0
 
 - **Browser extension for video sync** (Chrome, Edge, Brave, Opera, Firefox) and the local status endpoint it reads.
-- **English and Turkish interface**, switchable from the tray menu; the extension follows the browser language.
+- **English and Turkish interface**; the extension follows the browser language.
 - **Editable latency presets** with live latency estimates. Low is now 120 ms (was 50 ms, which crackled).
 - **New look**: HomePod mini app and tray icons, theme-aware tray icon with status dot, themed preset editor with dark title bar.
-- **Fewer dropouts on Wi-Fi**: stream packets are tagged for the Wi-Fi priority queues, and Wi-Fi background scans on the PC are paused while streaming.
-- Sturdier sessions: RTSP replies matched by CSeq, volume query failures no longer drop the stream, audio and capture threads recover from errors.
 - Source code, comments and documentation are in English.
 
 ### 1.0.0
@@ -279,7 +299,9 @@ Contributions from anyone else arrive as pull requests and are reviewed before t
 
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
-In practice: audio goes only to the HomePod you pick, on your local network. The browser extension talks only to PodBridge on the same computer (`127.0.0.1`). There is no telemetry, no update check and no account. Settings and the log stay in `%LOCALAPPDATA%\PodBridge`.
+In practice: audio goes only to the HomePod you pick, on your local network. The browser extension talks only to PodBridge on the same computer (`127.0.0.1`). There is no telemetry and no account.
+
+The only request to the internet is the update check: once a day PodBridge asks the public GitHub API for the latest release of this repository (`api.github.com/repos/Heymez0/PodBridge/releases/latest`) and, when there is a newer version, downloads `PodBridge.exe` from GitHub. The request carries nothing but PodBridge's version in the `User-Agent` header; GitHub sees your IP address as with any web request ([GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)). Turn off **Update automatically** in the tray menu to stop it. Settings and the log stay in `%LOCALAPPDATA%\PodBridge`.
 
 ## License and credits
 

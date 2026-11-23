@@ -115,6 +115,13 @@ internal static class Program
     {
         using var mutex = new Mutex(true, MutexName, out bool first);
         using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+        bool afterUpdate = args.Contains(Updater.AfterUpdateArgument);
+        if (!first && afterUpdate)
+        {
+            // Started by the previous version, which is still shutting down; wait for it to let go.
+            try { first = mutex.WaitOne(TimeSpan.FromSeconds(20)); }
+            catch (AbandonedMutexException) { first = true; }
+        }
         if (!first)
         {
             showEvent.Set();
@@ -135,7 +142,23 @@ internal static class Program
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         var settings = Settings.Load();
         L.Current = settings.Language;
-        var controller = new AppController(settings);
+
+        // An update downloaded in an earlier run is installed now, before anything streams.
+        if (!afterUpdate && settings.AutoUpdate && Updater.Staged() != null)
+        {
+            try
+            {
+                if (Updater.TryApply(out string error)) return 0;
+                Log.Write($"Could not install the update: {error}");
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"Could not install the update: {ex.Message}");
+            }
+        }
+        if (afterUpdate) Updater.CleanUpOldVersion();
+
+        var controller = new AppController(settings, afterUpdate);
 
         // If the app is launched a second time, the new process exits and the running one shows its panel.
         var ui = SynchronizationContext.Current!;

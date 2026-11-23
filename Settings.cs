@@ -43,6 +43,8 @@ public sealed class Settings
     public bool MuteLocal { get; set; } = true;
     public bool AutoConnect { get; set; }
     public bool FirstRunDone { get; set; }
+    public bool AutoUpdate { get; set; } = true;
+    public DateTime LastUpdateCheck { get; set; }
 
     /// <summary>Saved so the computer's speakers do not stay muted if the app crashes.</summary>
     public LocalAudioSnapshot? PendingRestore { get; set; }
