@@ -251,6 +251,8 @@ PodBridge --write-extension-icons BrowserExtension/icons
 - **English and Turkish interface**, switchable from the tray menu; the extension follows the browser language.
 - **Editable latency presets** with live latency estimates. Low is now 120 ms (was 50 ms, which crackled).
 - **New look**: HomePod mini app and tray icons, theme-aware tray icon with status dot, themed preset editor with dark title bar.
+- **Fewer dropouts on Wi-Fi**: stream packets are tagged for the Wi-Fi priority queues, and Wi-Fi background scans on the PC are paused while streaming.
+- Sturdier sessions: RTSP replies matched by CSeq, volume query failures no longer drop the stream, audio and capture threads recover from errors.
 - Source code, comments and documentation are in English.
 
 ### 1.0.0
