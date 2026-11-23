@@ -14,7 +14,7 @@ The interface is available in English and Turkish.
   <img src="docs/panel-v2.png" alt="PodBridge panel" width="360">
 </p>
 
-**[Download the latest release](https://github.com/Heymez0/PodBridge/releases/latest)**: `PodBridge.exe` (Windows 10/11 x64, no .NET needed) and the browser extension zip.
+**[Download the latest release](https://github.com/Heymez0/PodBridge/releases/latest)**: `PodBridge.exe` (Windows 10/11 x64, no .NET needed) and the browser extension zip. See the [code signing policy](#code-signing-policy).
 
 ## Contents
 
@@ -30,6 +30,8 @@ The interface is available in English and Turkish.
 - [Command-line tools](#command-line-tools)
 - [Known limitations](#known-limitations)
 - [Changelog](#changelog)
+- [Code signing policy](#code-signing-policy)
+- [Privacy](#privacy)
 - [License and credits](#license-and-credits)
 
 ## Features
@@ -254,6 +256,28 @@ PodBridge --write-extension-icons BrowserExtension/icons
 ### 1.0.0
 
 - First release: AirPlay 2 realtime streaming to HomePod, WASAPI loopback capture, tray panel, reconnects, speaker muting and volume mapping, firewall setup.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- Release binaries are built from this repository by the [Release workflow](.github/workflows/release.yml) on GitHub-hosted runners, never on a personal computer. The workflow runs the self-test before anything is signed.
+- Only `PodBridge.exe` built from this repository is signed. Third-party libraries (NAudio) are not signed by this project.
+- Every signing request is approved by hand.
+- Releases published before the signing setup was in place (1.0.0 and the first 2.0.0 build) are unsigned.
+
+Team roles:
+
+- Committers and reviewers: [Heymez0](https://github.com/Heymez0)
+- Approvers: [Heymez0](https://github.com/Heymez0)
+
+Contributions from anyone else arrive as pull requests and are reviewed before they are merged.
+
+## Privacy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+In practice: audio goes only to the HomePod you pick, on your local network. The browser extension talks only to PodBridge on the same computer (`127.0.0.1`). There is no telemetry, no update check and no account. Settings and the log stay in `%LOCALAPPDATA%\PodBridge`.
 
 ## License and credits
 

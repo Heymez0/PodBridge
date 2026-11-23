@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration for PodBridge. Paste it as the project's default artifact configuration.
+     The workflow uploads PodBridge.exe as a GitHub artifact, which arrives as a zip with the exe at its root.
+     The product name is enforced so only PodBridge builds can be signed with this project. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="PodBridge.exe" product-name="PodBridge">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
