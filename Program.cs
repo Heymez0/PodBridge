@@ -108,10 +108,10 @@ internal static class Program
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             return Task.Run(LatencyMeter.ProbeVolumeAsync).GetAwaiter().GetResult();
         }
-        return RunApplication();
+        return RunApplication(args);
     }
 
-    private static int RunApplication()
+    private static int RunApplication(string[] args)
     {
         using var mutex = new Mutex(true, MutexName, out bool first);
         using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
