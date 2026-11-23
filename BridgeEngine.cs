@@ -122,7 +122,11 @@ public sealed class BridgeEngine : IDisposable
                     session.StartStreaming(source);
                     startedAt = DateTime.UtcNow;
 
-                    if (await session.GetVolumePercentAsync().ConfigureAwait(false) is { } current) _volume = current;
+                    // The stream already plays at this point; a slow or failed volume query must not tear it down.
+                    double? current = null;
+                    try { current = await session.GetVolumePercentAsync().ConfigureAwait(false); }
+                    catch (Exception ex) when (ex is TimeoutException or IOException) { Log.Write($"Could not read volume: {ex.Message}"); }
+                    if (current is { } known) _volume = known;
                     else if (_volume < 0) _volume = 30;
                     AttachLocalOutput();
 

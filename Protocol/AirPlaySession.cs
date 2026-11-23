@@ -67,7 +67,8 @@ public sealed class AirPlaySession : IDisposable
     private NetworkStream? _controlStream;
     private SecureFrames? _controlFrames;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private readonly Queue<TaskCompletionSource<RtspResponse>> _pending = new();
+    // Replies are matched to requests by CSeq, so a request that timed out cannot shift every later reply by one.
+    private readonly List<(int CSeq, TaskCompletionSource<RtspResponse> Waiter)> _pending = [];
     private readonly object _pendingLock = new();
     private readonly MemoryStream _rxPlain = new();
     private int _cseq;
@@ -80,6 +81,8 @@ public sealed class AirPlaySession : IDisposable
     private readonly Socket _audioSocket = NewUdp();
     private IPEndPoint? _remoteControl;
     private int _timingRequests;
+    private readonly NetworkPriority.QosFlows _qos;
+    private NetworkPriority.WifiStreamingMode? _wifi;
 
     private readonly uint _sessionId = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
     private readonly string _dacpId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
@@ -116,6 +119,7 @@ public sealed class AirPlaySession : IDisposable
         _port = port;
         _options = options;
         _log = log;
+        _qos = new NetworkPriority.QosFlows(log);
         Array.Fill(_backlogSeq, -1);
     }
 
@@ -123,6 +127,9 @@ public sealed class AirPlaySession : IDisposable
     {
         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         socket.Bind(new IPEndPoint(IPAddress.Any, 0));
+        // Room for bursts after a scheduling hiccup and for answering a large retransmit request at once.
+        socket.SendBufferSize = 512 * 1024;
+        socket.ReceiveBufferSize = 256 * 1024;
         // Windows reports an ICMP "port unreachable" as an error on the next receive; turn that off.
         const int SioUdpConnReset = unchecked((int)0x9800000C);
         socket.IOControl(SioUdpConnReset, [0], null);
@@ -296,8 +303,11 @@ public sealed class AirPlaySession : IDisposable
             throw new IOException("The HomePod did not report a data port");
         long controlPort = stream.GetValueOrDefault("controlPort") as long? ?? dataPort;
 
-        _audioSocket.Connect(new IPEndPoint(_host, (int)dataPort));
+        var data = new IPEndPoint(_host, (int)dataPort);
+        _audioSocket.Connect(data);
         _remoteControl = new IPEndPoint(_host, (int)controlPort);
+        _qos.Add(_audioSocket, data, NetworkPriority.TrafficType.AudioVideo);
+        _qos.Add(_controlSocket, _remoteControl, NetworkPriority.TrafficType.AudioVideo);
         ReceiverLatencyMs = stream.GetValueOrDefault("arrivalToRenderLatencyMs") as long?;
         _log($"Stream SETUP complete: data={dataPort} control={controlPort} device latency={ReceiverLatencyMs} ms");
     }
@@ -319,7 +329,8 @@ public sealed class AirPlaySession : IDisposable
     {
         var head = new StringBuilder(256);
         head.Append(method).Append(' ').Append(uri).Append(' ').Append(protocol).Append("\r\n");
-        head.Append("CSeq: ").Append(Interlocked.Increment(ref _cseq)).Append("\r\n");
+        int cseq = Interlocked.Increment(ref _cseq);
+        head.Append("CSeq: ").Append(cseq).Append("\r\n");
         head.Append("User-Agent: ").Append(UserAgent).Append("\r\n");
         head.Append("DACP-ID: ").Append(_dacpId).Append("\r\n");
         head.Append("Active-Remote: ").Append(_activeRemote).Append("\r\n");
@@ -335,7 +346,7 @@ public sealed class AirPlaySession : IDisposable
         await _writeLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            lock (_pendingLock) _pending.Enqueue(pending);
+            lock (_pendingLock) _pending.Add((cseq, pending));
             var wire = _controlFrames?.Seal(message) ?? message;
             await _controlStream!.WriteAsync(wire).ConfigureAwait(false);
         }
@@ -345,7 +356,11 @@ public sealed class AirPlaySession : IDisposable
         }
 
         var finished = await Task.WhenAny(pending.Task, Task.Delay(ResponseTimeoutMs)).ConfigureAwait(false);
-        if (finished != pending.Task) throw new TimeoutException($"{method} {uri} got no reply");
+        if (finished != pending.Task)
+        {
+            lock (_pendingLock) _pending.RemoveAll(p => p.Waiter == pending);
+            throw new TimeoutException($"{method} {uri} got no reply");
+        }
         return await pending.Task.ConfigureAwait(false);
     }
 
@@ -369,8 +384,9 @@ public sealed class AirPlaySession : IDisposable
         catch (Exception ex) { detail = ex.Message; }
         lock (_pendingLock)
         {
-            while (_pending.TryDequeue(out var waiter))
+            foreach (var (_, waiter) in _pending)
                 waiter.TrySetException(new IOException("Control connection closed"));
+            _pending.Clear();
         }
         Shutdown(reason, detail);
     }
@@ -401,8 +417,19 @@ public sealed class AirPlaySession : IDisposable
             var status = lines[0].Split(' ');
             if (status.Length >= 2 && int.TryParse(status[1], out int code))
             {
-                TaskCompletionSource<RtspResponse>? waiter;
-                lock (_pendingLock) _pending.TryDequeue(out waiter);
+                TaskCompletionSource<RtspResponse>? waiter = null;
+                lock (_pendingLock)
+                {
+                    // Fall back to the oldest request if the reply carries no CSeq we know.
+                    int index = int.TryParse(headers.GetValueOrDefault("CSeq"), out int replyCSeq)
+                        ? _pending.FindIndex(p => p.CSeq == replyCSeq) : -1;
+                    if (index < 0 && _pending.Count > 0) index = 0;
+                    if (index >= 0)
+                    {
+                        waiter = _pending[index].Waiter;
+                        _pending.RemoveAt(index);
+                    }
+                }
                 waiter?.TrySetResult(new RtspResponse(code, headers, body));
             }
         }
@@ -487,7 +514,11 @@ public sealed class AirPlaySession : IDisposable
                 BinaryPrimitives.WriteUInt64BigEndian(reply.AsSpan(24), now);
                 _timingSocket.SendTo(reply, from);
                 if (Interlocked.Increment(ref _timingRequests) == 1)
+                {
                     _log("HomePod clock sync started");
+                    // Clock sync replies are tiny and their delay feeds straight into the HomePod's timeline estimate.
+                    _qos.Add(_timingSocket, (IPEndPoint)from, NetworkPriority.TrafficType.Voice);
+                }
             }
             catch (SocketException) { }
             catch (ObjectDisposedException) { return; }
@@ -532,6 +563,7 @@ public sealed class AirPlaySession : IDisposable
 
     public void StartStreaming(IPcmSource source)
     {
+        _wifi = new NetworkPriority.WifiStreamingMode(_log);
         _audioThread = new Thread(() => AudioLoop(source))
         {
             IsBackground = true,
@@ -599,6 +631,7 @@ public sealed class AirPlaySession : IDisposable
 
                 try { _audioSocket.Send(packet); }
                 catch (SocketException) { }   // Transient network error; the feedback loop catches persistent ones.
+                catch (ObjectDisposedException) { return; }   // The session shut down while this thread was still sending.
 
                 first = false;
                 seq++;
@@ -634,6 +667,7 @@ public sealed class AirPlaySession : IDisposable
         BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(16), unchecked((uint)framesSent + latency));
         try { _controlSocket.SendTo(packet, _remoteControl); }
         catch (SocketException) { }
+        catch (ObjectDisposedException) { }
     }
 
     private async Task FeedbackLoop()
@@ -705,6 +739,8 @@ public sealed class AirPlaySession : IDisposable
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         _stop.Cancel();
         _audioThread?.Join(500);
+        _wifi?.Dispose();
+        _qos.Dispose();
         _timingSocket.Dispose();
         _controlSocket.Dispose();
         _audioSocket.Dispose();

@@ -109,6 +109,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         using var enumerator = new MMDeviceEnumerator();
         var watcher = new EndpointWatcher(_deviceChanged);
         enumerator.RegisterEndpointNotificationCallback(watcher);
+        string? lastError = null;
         try
         {
             while (!_stop.IsCancellationRequested)
@@ -118,10 +119,14 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
                     _deviceChanged.Reset();
                     using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                     CaptureFrom(device);
+                    lastError = null;
                 }
-                catch (Exception ex) when (ex is COMException or InvalidOperationException or NotSupportedException)
+                catch (Exception ex)
                 {
-                    _log($"Restarting capture: {ex.Message}");
+                    // Any failure here must restart capture, never end this thread: an exception escaping a background
+                    // thread closes the whole app. Repeats of the same error (no output device, for example) are logged once.
+                    if (ex.Message != lastError) _log($"Restarting capture: {ex.GetType().Name}: {ex.Message}");
+                    lastError = ex.Message;
                     _stop.Token.WaitHandle.WaitOne(500);
                 }
             }
