@@ -83,7 +83,9 @@ The tray icon shows a blue dot while streaming and an orange dot when something 
 
 While streaming, the volume up and down keys change the HomePod volume in 2% steps (hold to repeat), the mute key mutes and unmutes the HomePod, and the taskbar volume slider follows the HomePod. PodBridge takes the keys for itself during streaming, so Windows never unmutes the computer's speakers; instead of the Windows volume pop-up, PodBridge shows its own in the same place, with the HomePod level. When streaming stops, or with **Volume keys control the HomePod** turned off, the keys work on the computer as usual.
 
-Right-click the tray icon for **Open log folder**, **Language**, **Check for updates**, **Update automatically**, **Uninstall…** and **Exit**.
+Right-click the tray icon for **Open log folder**, **Language**, **Check for updates**, **Update automatically**, **Prioritize audio on the network**, **Uninstall…** and **Exit**.
+
+**Prioritize audio on the network** (on by default) tags the stream's packets for the priority queues and pauses Wi-Fi background scans while streaming. If you hear crackles or short cuts, try turning it off: some routers handle tagged packets worse than plain ones. Changing it restarts an active stream.
 The interface language is English or Türkçe; the default follows the Windows display language.
 
 ## Latency
@@ -216,7 +218,7 @@ Versions before 2.1.0 have no updater: download 2.1.0 once by hand.
 
 **No HomePod found.** The PC and HomePod must be on the same network and subnet. Some routers block mDNS between Wi-Fi and Ethernet, or between bands.
 
-**Crackling or dropouts.** Switch to Balanced or Stable, or raise the Low buffer with **Edit**. The log records underruns and retransmits every 30 seconds.
+**Crackling or dropouts.** Switch to Balanced or Stable, or raise the Low buffer with **Edit**, and try turning off **Prioritize audio on the network** in the tray menu. Every 30 seconds the log records underruns, retransmits and capture skips (buffered audio dropped on the computer), and every retransmit request is logged with how long ago the requested packets were sent; a request older than the buffer cannot be played in time.
 
 **Sound comes from the PC speakers as well.** Turn on **Mute computer speakers**.
 
@@ -269,6 +271,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 - **Volume and mute keys go straight to the HomePod** while streaming. PodBridge takes the keys itself, so the computer's speakers are never unmuted for a moment by volume up. The mute key mutes the HomePod; the next press or a volume key brings the sound back.
 - **Volume pop-up**: since the keys no longer reach Windows, PodBridge shows a pop-up like the Windows 11 one, with a HomePod icon and the HomePod level.
+- **Network priority can be turned off** in the tray menu, and the log now records capture skips and the age of each retransmit request, to track down crackles.
 - **New panel option, Volume keys control the HomePod** (on by default), to leave the keys to the computer. The link no longer depends on Mute computer speakers.
 - If you stop streaming while the HomePod is muted, its previous volume is restored.
 - After a short Wi-Fi drop, the HomePod sometimes closes the new session while it cleans up the old one. PodBridge took that for another device taking over and gave up; it now keeps reconnecting for a minute after a drop.

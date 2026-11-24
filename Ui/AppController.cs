@@ -193,6 +193,16 @@ public sealed class AppController : ApplicationContext
         InstallUpdateWhenIdle(userAsked: false);
     }
 
+    private void ToggleNetworkPriority()
+    {
+        Settings.NetworkPriority = !Settings.NetworkPriority;
+        Settings.Save();
+        RebuildMenu();
+        Log.Write($"Network priority {(Settings.NetworkPriority ? "on" : "off")}");
+        // Applied when a session starts, so an active stream is restarted, like a latency change.
+        if (Engine.State == BridgeState.Streaming && Engine.Device is { } device) Engine.Connect(device);
+    }
+
     private void ToggleAutoUpdate()
     {
         Settings.AutoUpdate = !Settings.AutoUpdate;
@@ -226,6 +236,10 @@ public sealed class AppController : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem(L.T("Update automatically", "Otomatik güncelle"), null, (_, _) => ToggleAutoUpdate())
         {
             Checked = Settings.AutoUpdate,
+        });
+        menu.Items.Add(new ToolStripMenuItem(L.T("Prioritize audio on the network", "Sesi ağda öncelikli gönder"), null, (_, _) => ToggleNetworkPriority())
+        {
+            Checked = Settings.NetworkPriority,
         });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("Uninstall…", "Kaldır…"), null, (_, _) => Uninstall());

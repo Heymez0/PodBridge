@@ -37,7 +37,8 @@ public interface IPcmSource
 public sealed record SessionOptions(
     string ClientName,
     string DeviceId,
-    int LatencyFrames);
+    int LatencyFrames,
+    bool NetworkPriority = true);
 
 /// <summary>A single AirPlay 2 realtime audio session. Pairing is transient (HAP transient),
 /// so no PIN or long-term keys are needed. See NOTICE for where the protocol steps come from.</summary>
@@ -81,7 +82,10 @@ public sealed class AirPlaySession : IDisposable
     private readonly Socket _audioSocket = NewUdp();
     private IPEndPoint? _remoteControl;
     private int _timingRequests;
-    private readonly NetworkPriority.QosFlows _qos;
+    private readonly NetworkPriority.QosFlows? _qos;
+    private int _nextSeq;
+    private int _requestsLogged;
+    private const int MaxRequestLogs = 300;
     private NetworkPriority.WifiStreamingMode? _wifi;
 
     private readonly uint _sessionId = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
@@ -119,7 +123,7 @@ public sealed class AirPlaySession : IDisposable
         _port = port;
         _options = options;
         _log = log;
-        _qos = new NetworkPriority.QosFlows(log);
+        _qos = options.NetworkPriority ? new NetworkPriority.QosFlows(log) : null;
         Array.Fill(_backlogSeq, -1);
     }
 
@@ -306,8 +310,9 @@ public sealed class AirPlaySession : IDisposable
         var data = new IPEndPoint(_host, (int)dataPort);
         _audioSocket.Connect(data);
         _remoteControl = new IPEndPoint(_host, (int)controlPort);
-        _qos.Add(_audioSocket, data, NetworkPriority.TrafficType.AudioVideo);
-        _qos.Add(_controlSocket, _remoteControl, NetworkPriority.TrafficType.AudioVideo);
+        _qos?.Add(_audioSocket, data, NetworkPriority.TrafficType.AudioVideo);
+        _qos?.Add(_controlSocket, _remoteControl, NetworkPriority.TrafficType.AudioVideo);
+        if (_qos == null) _log("Network priority off: packets sent unmarked, Wi-Fi left as it is");
         ReceiverLatencyMs = stream.GetValueOrDefault("arrivalToRenderLatencyMs") as long?;
         _log($"Stream SETUP complete: data={dataPort} control={controlPort} device latency={ReceiverLatencyMs} ms");
     }
@@ -517,7 +522,7 @@ public sealed class AirPlaySession : IDisposable
                 {
                     _log("HomePod clock sync started");
                     // Clock sync replies are tiny and their delay feeds straight into the HomePod's timeline estimate.
-                    _qos.Add(_timingSocket, (IPEndPoint)from, NetworkPriority.TrafficType.Voice);
+                    _qos?.Add(_timingSocket, (IPEndPoint)from, NetworkPriority.TrafficType.Voice);
                 }
             }
             catch (SocketException) { }
@@ -538,6 +543,8 @@ public sealed class AirPlaySession : IDisposable
                 if (read < 8 || (buffer[1] & 0x7F) != 0x55) continue;
                 ushort lost = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(4));
                 ushort count = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(6));
+                int behind = (ushort)(Volatile.Read(ref _nextSeq) - lost);
+                int resent = 0;
                 for (int i = 0; i < Math.Min((int)count, BacklogSize); i++)
                 {
                     ushort seq = (ushort)(lost + i);
@@ -552,7 +559,11 @@ public sealed class AirPlaySession : IDisposable
                     BinaryPrimitives.WriteUInt16BigEndian(resend.AsSpan(2), seq);
                     _controlSocket.SendTo(resend, from);
                     Interlocked.Increment(ref _retransmitted);
+                    resent++;
                 }
+                // How far back the request reaches tells whether the resent audio can still be played in time.
+                if (Interlocked.Increment(ref _requestsLogged) <= MaxRequestLogs)
+                    _log($"Retransmit request: {count} packets, oldest sent {behind * FramesPerPacket * 1000 / SampleRate} ms ago, {resent} resent");
             }
             catch (SocketException) { }
             catch (ObjectDisposedException) { return; }
@@ -563,7 +574,7 @@ public sealed class AirPlaySession : IDisposable
 
     public void StartStreaming(IPcmSource source)
     {
-        _wifi = new NetworkPriority.WifiStreamingMode(_log);
+        if (_options.NetworkPriority) _wifi = new NetworkPriority.WifiStreamingMode(_log);
         _audioThread = new Thread(() => AudioLoop(source))
         {
             IsBackground = true,
@@ -635,6 +646,7 @@ public sealed class AirPlaySession : IDisposable
 
                 first = false;
                 seq++;
+                Volatile.Write(ref _nextSeq, seq);
                 framesSent += FramesPerPacket;
                 Interlocked.Increment(ref _packetsSent);
             }
@@ -740,7 +752,7 @@ public sealed class AirPlaySession : IDisposable
         _stop.Cancel();
         _audioThread?.Join(500);
         _wifi?.Dispose();
-        _qos.Dispose();
+        _qos?.Dispose();
         _timingSocket.Dispose();
         _controlSocket.Dispose();
         _audioSocket.Dispose();

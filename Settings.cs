@@ -42,6 +42,8 @@ public sealed class Settings
     public int StableBufferMs { get; set; } = DefaultStableBufferMs;
     public bool MuteLocal { get; set; } = true;
     public bool VolumeKeys { get; set; } = true;
+    /// <summary>QoS tags on the stream's packets and Wi-Fi streaming mode while streaming.</summary>
+    public bool NetworkPriority { get; set; } = true;
     public bool AutoConnect { get; set; }
     public bool FirstRunDone { get; set; }
     public bool AutoUpdate { get; set; } = true;

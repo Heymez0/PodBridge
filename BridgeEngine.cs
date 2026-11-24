@@ -117,7 +117,7 @@ public sealed class BridgeEngine : IDisposable
                     Device = target;
 
                     var options = new SessionOptions(Environment.MachineName, _settings.ClientId,
-                                                     _settings.LatencyFrames());
+                                                     _settings.LatencyFrames(), _settings.NetworkPriority);
                     using var session = new AirPlaySession(IPAddress.Parse(target.Address), target.Port, options, Log.Write);
                     var closed = new TaskCompletionSource<(SessionCloseReason Reason, string Detail)>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -150,7 +150,7 @@ public sealed class BridgeEngine : IDisposable
                             if (ended == closed.Task) break;
                             ct.ThrowIfCancellationRequested();
                             Log.Write($"Stream: {session.PacketsSent} packets, {session.PacketsRetransmitted} retransmits, " +
-                                      $"{source.Underruns} underruns, buffer {source.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
+                                      $"{source.Underruns} underruns, {source.Skips} capture skips, buffer {source.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
                         }
                         (reason, closeDetail) = await closed.Task.ConfigureAwait(false);
                     }

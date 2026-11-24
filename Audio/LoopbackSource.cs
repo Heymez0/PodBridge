@@ -33,6 +33,9 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
     public long BufferedFrames => Volatile.Read(ref _written) - Volatile.Read(ref _read);
     public long Underruns => Volatile.Read(ref _underruns);
     private long _underruns;
+    /// <summary>Times buffered audio was dropped to keep the latency bounded; each one is a small audible jump.</summary>
+    public long Skips => Volatile.Read(ref _skips);
+    private long _skips;
 
     /// <summary>Raised with the device ID whenever the captured device changes.</summary>
     public event Action<string>? DeviceActive;
@@ -58,6 +61,7 @@ public sealed class LoopbackSource : IPcmSource, IDisposable
         if (_skipBacklog)
         {
             _skipBacklog = false;
+            if (written - TargetFrames > read) Interlocked.Increment(ref _skips);
             read = Math.Max(read, written - TargetFrames);
         }
         long available = written - read;
