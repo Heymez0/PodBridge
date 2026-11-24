@@ -24,6 +24,7 @@ internal static class SelfTest
         StatusEndpoint();
         NetworkPriorityCalls();
         ReleaseParsing();
+        StereoGroups();
         Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TESTS FAILED");
         return _failures == 0 ? 0 : 1;
     }
@@ -286,10 +287,69 @@ internal static class SelfTest
         Record(Instance, 33, [0, 0, 0, 0, 0x1B, 0x58, .. EncodedName("yatak.local")]);
         var model = "model=AudioAccessory5,1"u8.ToArray();
         var id = "deviceid=AA:BB:CC:DD:EE:01"u8.ToArray();
-        Record(Instance, 16, [(byte)model.Length, .. model, (byte)id.Length, .. id]);
+        // TXT of the leader of a Home-app stereo pair (flags with bit 13, TightSyncIsGroupLeader).
+        var tsid = "tsid=7D2A0F2E-1111-4E5A-9C3B-000000000001"u8.ToArray();
+        var gpn = "gpn=Living Room"u8.ToArray();
+        var flags = "flags=0x9a404"u8.ToArray();
+        Record(Instance, 16, [(byte)model.Length, .. model, (byte)id.Length, .. id, (byte)tsid.Length, .. tsid,
+                              (byte)gpn.Length, .. gpn, (byte)flags.Length, .. flags]);
         Record("yatak.local", 1, [192, 168, 1, 50]);
 
         var device = MdnsBrowser.Parse(ms.ToArray()).SingleOrDefault();
         Check("mDNS reply", device is { Name: "Café Speaker", Address: "192.168.1.50", Port: 7000, IsHomePod: true });
+        Check("mDNS stereo pair fields", device is { PairId: "7D2A0F2E-1111-4E5A-9C3B-000000000001", PairName: "Living Room", PairLeader: true });
+    }
+
+    private static void StereoGroups()
+    {
+        // One packet per index from the capture, the same samples for every session that asks for it.
+        var source = new CountingSource();
+        var fanout = new PacketFanout(source);
+        short[] a = new short[AirPlaySession.FramesPerPacket * 2], b = new short[a.Length];
+        fanout.Read(0, a);
+        fanout.Read(0, b);
+        bool samePacket = a.SequenceEqual(b) && source.Reads == 1;
+        fanout.Read(1, a);
+        fanout.Read(1, b);
+        Check("group: both HomePods get the same packet, captured once", samePacket && a.SequenceEqual(b) && source.Reads == 2);
+        fanout.Read(257, a);   // Same cache slot as packet 1, which is now gone.
+        fanout.Read(1, b);
+        Check("group: a stalled session gets silence instead of stale audio", b.All(x => x == 0));
+
+        short[] stereo = [10, -20, 30, -40];
+        short[] left = [.. stereo], right = [.. stereo];
+        AirPlaySession.PickChannel(left, ChannelMode.Left);
+        AirPlaySession.PickChannel(right, ChannelMode.Right);
+        Check("stereo: left and right channel split", left.SequenceEqual(new short[] { 10, 10, 30, 30 }) && right.SequenceEqual(new short[] { -20, -20, -40, -40 }));
+
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        ulong later = AirPlaySession.NtpAt(now), earlier = AirPlaySession.NtpAt(now - System.Diagnostics.Stopwatch.Frequency);
+        Check("shared clock: one second is 2^32 NTP units", Math.Abs((long)(later - earlier) - (1L << 32)) < 4);
+
+        var leader = new AirPlayDevice("A", "Left one", "AudioAccessory5,1", "192.168.1.50", 7000) { PairId = "T", PairName = "Living Room", PairLeader = true };
+        var follower = new AirPlayDevice("B", "Right one", "AudioAccessory5,1", "192.168.1.51", 7000) { PairId = "T", PairName = "Living Room" };
+        var kitchen = new AirPlayDevice("C", "Kitchen", "AudioAccessory5,1", "192.168.1.52", 7000);
+        var office = new AirPlayDevice("D", "Office", "AudioAccessory5,1", "192.168.1.53", 7000) { PairId = "solo" };
+        var list = DeviceGroups.Build([follower, leader, kitchen, office], "C", "D");
+        var homePair = list.FirstOrDefault(d => d.Id == "pair:T");
+        var ownPair = list.FirstOrDefault(d => d.Id == "stereo:C+D");
+        Check("Home-app pair: one entry, leader first, members hidden",
+              homePair?.Members is [{ Device.Id: "A", Channel: ChannelMode.Stereo }, { Device.Id: "B", Channel: ChannelMode.Stereo }]
+              && list.All(d => d.Id is not ("A" or "B")));
+        Check("own stereo pair: left and right entry next to the single HomePods",
+              ownPair?.Members is [{ Device.Id: "C", Channel: ChannelMode.Left }, { Device.Id: "D", Channel: ChannelMode.Right }]
+              && list.Any(d => d.Id == "C") && list.Any(d => d.Id == "D") && list.Count == 4);
+        Check("own stereo pair: Home-app pair members not offered",
+              DeviceGroups.PairableSingles([leader, follower, kitchen, office]).Select(d => d.Id).SequenceEqual(["C", "D"]));
+    }
+
+    private sealed class CountingSource : IPcmSource
+    {
+        public int Reads;
+        public void Read(Span<short> interleaved)
+        {
+            Reads++;
+            interleaved.Fill((short)Reads);
+        }
     }
 }

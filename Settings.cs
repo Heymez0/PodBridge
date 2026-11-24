@@ -44,6 +44,9 @@ public sealed class Settings
     public bool VolumeKeys { get; set; } = true;
     /// <summary>QoS tags on the stream's packets and Wi-Fi streaming mode while streaming.</summary>
     public bool NetworkPriority { get; set; } = true;
+    /// <summary>PodBridge's own stereo pair: the HomePods that play the left and the right channel.</summary>
+    public string? StereoLeftId { get; set; }
+    public string? StereoRightId { get; set; }
     public bool AutoConnect { get; set; }
     public bool FirstRunDone { get; set; }
     public bool AutoUpdate { get; set; } = true;

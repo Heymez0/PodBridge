@@ -45,7 +45,7 @@ public sealed class AppController : ApplicationContext
         LocalOutputControl.RestoreAfterCrash(settings);
         Engine = new BridgeEngine(settings);
         Engine.Changed += () => _ui.Post(_ => OnEngineChanged(), null);
-        Devices = FilterDevices(settings.KnownDevices);
+        Devices = DeviceGroups.Build(settings.KnownDevices, settings.StereoLeftId, settings.StereoRightId);
 
         _flyout = new FlyoutForm(this);
         _ = _flyout.Handle;
@@ -228,6 +228,7 @@ public sealed class AppController : ApplicationContext
         foreach (var (value, label) in new[] { (UiLanguage.English, "English"), (UiLanguage.Turkish, "Türkçe") })
             language.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetLanguage(value)) { Checked = L.Current == value });
         menu.Items.Add(language);
+        menu.Items.Add(BuildStereoMenu());
         menu.Items.Add(new ToolStripSeparator());
         if (_updateReady is { } ready)
             menu.Items.Add(L.T($"Install version {ready} and restart", $"{ready} sürümünü kur ve yeniden başlat"), null, (_, _) => InstallUpdateWhenIdle(userAsked: true));
@@ -253,6 +254,74 @@ public sealed class AppController : ApplicationContext
         L.Current = language;
         Settings.Language = language;
         Settings.Save();
+        RebuildDeviceList();
+        RebuildMenu();
+        _flyout.Sync();
+    }
+
+    private void RebuildDeviceList() =>
+        Devices = DeviceGroups.Build(Settings.KnownDevices, Settings.StereoLeftId, Settings.StereoRightId);
+
+    // ---------------------------------------------------------------- stereo with two HomePods
+
+    private ToolStripMenuItem BuildStereoMenu()
+    {
+        var stereo = new ToolStripMenuItem(L.T("Stereo with two HomePods (experimental)", "İki HomePod ile stereo (deneysel)"));
+        var singles = DeviceGroups.PairableSingles(Settings.KnownDevices);
+        if (singles.Count < 2)
+        {
+            stereo.DropDownItems.Add(new ToolStripMenuItem(L.T("Needs two HomePods on the network", "Ağda iki HomePod gerekli")) { Enabled = false });
+            return stereo;
+        }
+        var left = new ToolStripMenuItem(L.T("Left speaker", "Sol hoparlör"));
+        var right = new ToolStripMenuItem(L.T("Right speaker", "Sağ hoparlör"));
+        foreach (var device in singles)
+        {
+            left.DropDownItems.Add(new ToolStripMenuItem(device.Name, null, (_, _) => SetStereoSide(device.Id, isLeft: true))
+            {
+                Checked = Settings.StereoLeftId == device.Id,
+            });
+            right.DropDownItems.Add(new ToolStripMenuItem(device.Name, null, (_, _) => SetStereoSide(device.Id, isLeft: false))
+            {
+                Checked = Settings.StereoRightId == device.Id,
+            });
+        }
+        stereo.DropDownItems.Add(left);
+        stereo.DropDownItems.Add(right);
+        stereo.DropDownItems.Add(new ToolStripSeparator());
+        stereo.DropDownItems.Add(new ToolStripMenuItem(L.T("Remove the stereo pair", "Stereo çifti kaldır"), null, (_, _) => ClearStereo())
+        {
+            Enabled = Settings.StereoLeftId != null || Settings.StereoRightId != null,
+        });
+        return stereo;
+    }
+
+    private void SetStereoSide(string id, bool isLeft)
+    {
+        if (isLeft)
+        {
+            Settings.StereoLeftId = id;
+            if (Settings.StereoRightId == id) Settings.StereoRightId = null;
+        }
+        else
+        {
+            Settings.StereoRightId = id;
+            if (Settings.StereoLeftId == id) Settings.StereoLeftId = null;
+        }
+        Settings.Save();
+        RebuildDeviceList();
+        RebuildMenu();
+        _flyout.Sync();
+        if (Settings.StereoLeftId != null && Settings.StereoRightId != null)
+            _tray.ShowBalloonTip(4000, "PodBridge", L.T("The stereo pair is now in the panel list.", "Stereo çift artık paneldeki listede."), ToolTipIcon.Info);
+    }
+
+    private void ClearStereo()
+    {
+        Settings.StereoLeftId = null;
+        Settings.StereoRightId = null;
+        Settings.Save();
+        RebuildDeviceList();
         RebuildMenu();
         _flyout.Sync();
     }
@@ -296,7 +365,7 @@ public sealed class AppController : ApplicationContext
                 var merged = Settings.KnownDevices.Where(k => homePods.All(d => d.Id != k.Id)).Concat(homePods);
                 Settings.KnownDevices = FilterDevices(merged);
                 Settings.Save();
-                Devices = Settings.KnownDevices;
+                RebuildDeviceList();
             }
         }
         catch (Exception ex)

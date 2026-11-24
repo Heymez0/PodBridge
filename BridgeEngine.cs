@@ -18,7 +18,8 @@ public enum BridgeState
     Failed,
 }
 
-/// <summary>Runs capture, the session and reconnects. Events arrive on background threads.</summary>
+/// <summary>Runs capture, the sessions and reconnects. A list entry may stand for several HomePods (a stereo pair);
+/// each gets its own session, all on one timeline. Events arrive on background threads.</summary>
 public sealed class BridgeEngine : IDisposable
 {
     private static readonly int[] BackoffSeconds = [1, 2, 4, 8, 15, 30];
@@ -32,13 +33,12 @@ public sealed class BridgeEngine : IDisposable
     private readonly object _gate = new();
     private CancellationTokenSource? _run;
     private Task _runTask = Task.CompletedTask;
-    private AirPlaySession? _session;
+    private volatile IReadOnlyList<AirPlaySession> _sessions = [];
     private LoopbackSource? _source;
     private string? _capturedDeviceId;
     private bool _localAttached;
     private double _volume = -1;
     private double? _volumeBeforeMute;
-    private DateTime _lastVolumeSent;
     private readonly SemaphoreSlim _volumeGate = new(1, 1);
 
     public BridgeState State { get; private set; }
@@ -48,8 +48,8 @@ public sealed class BridgeEngine : IDisposable
     public bool HomePodMuted => _volumeBeforeMute != null;
     /// <summary>The level to show: while muted, the level the HomePod returns to.</summary>
     public double DisplayVolume => _volumeBeforeMute ?? Math.Max(_volume, 0);
-    public long? ReceiverLatencyMs => _session?.ReceiverLatencyMs;
-    public long PacketsRetransmitted => _session?.PacketsRetransmitted ?? 0;
+    public long? ReceiverLatencyMs => _sessions.Count > 0 ? _sessions[0].ReceiverLatencyMs : null;
+    public long PacketsRetransmitted => _sessions.Sum(s => s.PacketsRetransmitted);
     public long Underruns => _source?.Underruns ?? 0;
 
     public event Action? Changed;
@@ -92,6 +92,9 @@ public sealed class BridgeEngine : IDisposable
         }
     }
 
+    private static IReadOnlyList<StreamMember> MembersOf(AirPlayDevice device) =>
+        device.Members is { Count: > 0 } members ? members : [new StreamMember(device, ChannelMode.Stereo)];
+
     private async Task RunAsync(AirPlayDevice device, Task previous, CancellationToken ct)
     {
         try { await previous.ConfigureAwait(false); }
@@ -101,6 +104,9 @@ public sealed class BridgeEngine : IDisposable
         var source = new LoopbackSource(Log.Write);
         source.DeviceActive += OnCaptureDevice;
         _source = source;
+        var members = MembersOf(device);
+        bool group = members.Count > 1;
+        if (group) Log.Write($"Group: {string.Join(", ", members.Select(m => $"{m.Device.Name} ({m.Channel})"))}");
         int attempt = 0;
         DateTime lastNetworkDrop = DateTime.MinValue;
         SetState(BridgeState.Connecting);
@@ -110,31 +116,46 @@ public sealed class BridgeEngine : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 DateTime startedAt = default;
+                var sessions = new List<AirPlaySession>();
                 try
                 {
-                    var target = await ResolveAsync(device, attempt > 0, ct).ConfigureAwait(false);
-                    device = target;
-                    Device = target;
+                    members = await ResolveAsync(members, attempt > 0, ct).ConfigureAwait(false);
+                    if (!group)
+                    {
+                        device = members[0].Device;
+                        Device = device;
+                    }
 
-                    var options = new SessionOptions(Environment.MachineName, _settings.ClientId,
-                                                     _settings.LatencyFrames(), _settings.NetworkPriority);
-                    using var session = new AirPlaySession(IPAddress.Parse(target.Address), target.Port, options, Log.Write);
                     var closed = new TaskCompletionSource<(SessionCloseReason Reason, string Detail)>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
-                    session.Closed += (reason, detail) => closed.TrySetResult((reason, detail));
+                    foreach (var member in members)
+                    {
+                        var options = new SessionOptions(Environment.MachineName, _settings.ClientId, _settings.LatencyFrames(),
+                                                         _settings.NetworkPriority, member.Channel);
+                        string prefix = group ? $"[{member.Device.Name}] " : "";
+                        var session = new AirPlaySession(IPAddress.Parse(member.Device.Address), member.Device.Port, options,
+                                                         line => Log.Write(prefix + line));
+                        session.Closed += (reason, detail) => closed.TrySetResult((reason, prefix + detail));
+                        sessions.Add(session);
+                    }
 
-                    await session.ConnectAsync(ct).ConfigureAwait(false);
-                    _session = session;
+                    // A group only plays once every HomePod in it is ready.
+                    await Task.WhenAll(sessions.Select(s => s.ConnectAsync(ct))).ConfigureAwait(false);
+                    _sessions = sessions;
                     _volumeBeforeMute = null;
-                    session.StartStreaming(source);
+                    var timeline = new StreamTimeline();
+                    var fanout = new PacketFanout(source);
+                    foreach (var session in sessions) session.StartStreaming(fanout, timeline);
                     startedAt = DateTime.UtcNow;
 
                     // The stream already plays at this point; a slow or failed volume query must not tear it down.
                     double? current = null;
-                    try { current = await session.GetVolumePercentAsync().ConfigureAwait(false); }
+                    try { current = await sessions[0].GetVolumePercentAsync().ConfigureAwait(false); }
                     catch (Exception ex) when (ex is TimeoutException or IOException) { Log.Write($"Could not read volume: {ex.Message}"); }
                     if (current is { } known) _volume = known;
                     else if (_volume < 0) _volume = 30;
+                    // A group plays at one level: the others follow the first HomePod.
+                    if (group) await SendVolumeAsync(sessions, _volume).ConfigureAwait(false);
                     AttachLocalOutput();
 
                     attempt = 0;
@@ -149,27 +170,31 @@ public sealed class BridgeEngine : IDisposable
                             var ended = await Task.WhenAny(closed.Task, Task.Delay(StatsInterval, ct)).ConfigureAwait(false);
                             if (ended == closed.Task) break;
                             ct.ThrowIfCancellationRequested();
-                            Log.Write($"Stream: {session.PacketsSent} packets, {session.PacketsRetransmitted} retransmits, " +
+                            Log.Write($"Stream: {sessions.Sum(s => s.PacketsSent)} packets, {sessions.Sum(s => s.PacketsRetransmitted)} retransmits, " +
                                       $"{source.Underruns} underruns, {source.Skips} capture skips, buffer {source.BufferedFrames * 1000 / AirPlaySession.SampleRate} ms");
                         }
                         (reason, closeDetail) = await closed.Task.ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
-                        // TEARDOWN has to go out before the using block disposes the session, or the HomePod stays busy for a while.
+                        // TEARDOWN has to go out before the sessions are disposed, or the HomePods stay busy for a while.
                         DetachLocalOutput();
-                        _session = null;
-                        // Muted with the mute key: give the HomePod its volume back, or it starts silent next time.
+                        _sessions = [];
+                        // Muted with the mute key: give the HomePods their volume back, or they start silent next time.
                         if (_volumeBeforeMute is { } restore)
                         {
                             _volumeBeforeMute = null;
                             _volume = restore;
-                            try { await session.SetVolumeAsync(restore).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+                            try { await SendVolumeAsync(sessions, restore).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
                             catch (Exception ex) { Log.Write($"Could not restore volume: {ex.Message}"); }
                         }
-                        await session.StopAsync().ConfigureAwait(false);
+                        await StopAllAsync(sessions).ConfigureAwait(false);
                         throw;
                     }
+                    // One HomePod of a group dropped: close the others properly too, then start over together.
+                    _sessions = [];
+                    await StopAllAsync(sessions).ConfigureAwait(false);
+
                     // After a network drop the HomePod still holds the old session for a while and may close the new one
                     // while it cleans up. That is not another device taking over, so keep retrying in that window.
                     bool recentDrop = DateTime.UtcNow - lastNetworkDrop < RecoveryWindow;
@@ -183,7 +208,7 @@ public sealed class BridgeEngine : IDisposable
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    await StopSessionAsync().ConfigureAwait(false);
+                    await StopSessionsAsync().ConfigureAwait(false);
                     return;
                 }
                 catch (FirewallBlockedException ex)
@@ -200,8 +225,12 @@ public sealed class BridgeEngine : IDisposable
                 {
                     Log.Write($"Connection error: {ex.GetType().Name}: {ex.Message}");
                 }
+                finally
+                {
+                    foreach (var session in sessions) session.Dispose();
+                }
 
-                _session = null;
+                _sessions = [];
                 DetachLocalOutput();
                 int wait = BackoffSeconds[Math.Min(attempt++, BackoffSeconds.Length - 1)];
                 SetState(BridgeState.Reconnecting, L.T($"retrying in {wait} s", $"{wait} sn içinde yeniden denenecek"));
@@ -211,7 +240,7 @@ public sealed class BridgeEngine : IDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         finally
         {
-            await StopSessionAsync().ConfigureAwait(false);
+            await StopSessionsAsync().ConfigureAwait(false);
             DetachLocalOutput();
             source.DeviceActive -= OnCaptureDevice;
             _source = null;
@@ -222,20 +251,24 @@ public sealed class BridgeEngine : IDisposable
         }
     }
 
-    private async Task StopSessionAsync()
+    private static Task StopAllAsync(IEnumerable<AirPlaySession> sessions) =>
+        Task.WhenAll(sessions.Select(s => s.StopAsync()));
+
+    private async Task StopSessionsAsync()
     {
-        var session = _session;
-        _session = null;
-        if (session != null) await session.StopAsync().ConfigureAwait(false);
+        var sessions = _sessions;
+        _sessions = [];
+        await StopAllAsync(sessions).ConfigureAwait(false);
     }
 
-    /// <summary>The DHCP address may have changed, so retries look the device up again over mDNS.</summary>
-    private static async Task<AirPlayDevice> ResolveAsync(AirPlayDevice device, bool refresh, CancellationToken ct)
+    /// <summary>The DHCP address may have changed, so retries look the HomePods up again over mDNS.</summary>
+    private static async Task<IReadOnlyList<StreamMember>> ResolveAsync(IReadOnlyList<StreamMember> members, bool refresh,
+                                                                        CancellationToken ct)
     {
-        if (!refresh) return device;
+        if (!refresh) return members;
         var devices = await MdnsBrowser.BrowseAsync(BrowseWindow, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        return devices.FirstOrDefault(d => d.Id == device.Id) ?? device;
+        return [.. members.Select(m => m with { Device = devices.FirstOrDefault(d => d.Id == m.Device.Id) ?? m.Device })];
     }
 
     // ---------------------------------------------------------------- volume and speakers
@@ -243,7 +276,7 @@ public sealed class BridgeEngine : IDisposable
     private void OnCaptureDevice(string deviceId)
     {
         _capturedDeviceId = deviceId;
-        if (_session != null) AttachLocalOutput();
+        if (_sessions.Count > 0) AttachLocalOutput();
     }
 
     private void AttachLocalOutput()
@@ -319,6 +352,9 @@ public sealed class BridgeEngine : IDisposable
         _volumeBeforeMute = current;
     }
 
+    private static Task SendVolumeAsync(IEnumerable<AirPlaySession> sessions, double percent) =>
+        Task.WhenAll(sessions.Select(s => s.SetVolumeAsync(percent)));
+
     private async Task ApplyVolumeAsync(double percent, bool fromWindows, bool muting = false)
     {
         if (!muting) _volumeBeforeMute = null;
@@ -330,7 +366,6 @@ public sealed class BridgeEngine : IDisposable
             await Task.Run(() => _localOutput.Reflect(percent)).ConfigureAwait(false);
 
         // Do not pile up requests while the slider is dragged; the latest value is always sent.
-        _lastVolumeSent = DateTime.UtcNow;
         if (!await _volumeGate.WaitAsync(0).ConfigureAwait(false)) return;
         try
         {
@@ -338,7 +373,7 @@ public sealed class BridgeEngine : IDisposable
             do
             {
                 sent = _volume;
-                if (_session is { } session) await session.SetVolumeAsync(sent).ConfigureAwait(false);
+                await SendVolumeAsync(_sessions, sent).ConfigureAwait(false);
             } while (Math.Abs(sent - _volume) > 0.01);
         }
         catch (Exception ex)
@@ -354,9 +389,9 @@ public sealed class BridgeEngine : IDisposable
     private void OnPowerChanged(object sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.Resume) return;
-        // After sleep the session is dead; close it now so a new one starts without waiting.
+        // After sleep the sessions are dead; close them now so new ones start without waiting.
         Log.Write("Resumed from sleep");
-        _session?.Dispose();
+        foreach (var session in _sessions) session.Dispose();
     }
 
     public void Dispose()

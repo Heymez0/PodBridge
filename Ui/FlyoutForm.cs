@@ -149,7 +149,7 @@ public sealed class FlyoutForm : Form
             var rect = new RectangleF(x, y, w, S(RowHeight));
             _hits.Add((rect, () => _app.ToggleDevice(device), key));
             DrawCard(g, x, y, w, S(RowHeight), active, _hoverKey == key);
-            DrawSpeaker(g, x + S(14), y + S(13), active ? _accentText : _text);
+            DrawSpeaker(g, x + S(14), y + S(13), active ? _accentText : _text, device.IsGroup);
             DrawText(g, device.Name, bodyFont, active ? _accentText : _text, x + S(40), y + S(12), w - S(90));
             if (active && engine.State == BridgeState.Streaming)
                 DrawText(g, L.T("Connected", "Bağlı"), smallFont, _accentText, x + w - S(46), y + S(14), S(46));
@@ -281,9 +281,16 @@ public sealed class FlyoutForm : Form
         return path;
     }
 
-    private void DrawSpeaker(Graphics g, float x, float y, Color color)
+    private void DrawSpeaker(Graphics g, float x, float y, Color color, bool pair = false)
     {
-        Glyphs.DrawHomePod(g, color, new RectangleF(x - S(2), y - S(2), S(22), S(22)));
+        if (!pair)
+        {
+            Glyphs.DrawHomePod(g, color, new RectangleF(x - S(2), y - S(2), S(22), S(22)));
+            return;
+        }
+        // Two smaller HomePods side by side for a stereo pair.
+        Glyphs.DrawHomePod(g, color, new RectangleF(x - S(4), y + S(2), S(15), S(15)));
+        Glyphs.DrawHomePod(g, color, new RectangleF(x + S(8), y + S(2), S(15), S(15)));
     }
 
     /// <summary>Renders the panel to an image so its look can be checked without showing it.</summary>

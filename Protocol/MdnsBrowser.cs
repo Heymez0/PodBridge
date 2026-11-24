@@ -3,12 +3,30 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace PodBridge.Protocol;
+
+/// <summary>A HomePod in a group and the part of the signal it plays.</summary>
+public sealed record StreamMember(AirPlayDevice Device, ChannelMode Channel);
 
 public sealed record AirPlayDevice(string Id, string Name, string Model, string Address, int Port)
 {
     public bool IsHomePod => Model.StartsWith("AudioAccessory", StringComparison.Ordinal);
+
+    /// <summary>Stereo pair made in the Home app: both HomePods advertise the same "tsid" (tight sync ID).</summary>
+    public string? PairId { get; init; }
+    /// <summary>The pair's name from the Home app ("gpn").</summary>
+    public string? PairName { get; init; }
+    /// <summary>Status flag bit 13, TightSyncIsGroupLeader.</summary>
+    public bool PairLeader { get; init; }
+
+    /// <summary>Set on a list entry that stands for several HomePods (a stereo pair); not saved.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<StreamMember>? Members { get; init; }
+
+    [JsonIgnore]
+    public bool IsGroup => Members is { Count: > 1 };
 }
 
 /// <summary>Finds _airplay._tcp services with one-shot mDNS queries. The query is sent from a random source port,
@@ -162,9 +180,25 @@ public static class MdnsBrowser
             var properties = txt.GetValueOrDefault(instance) ?? [];
             string id = properties.GetValueOrDefault("deviceid") ?? instance;
             string display = instance[..^(ServiceName.Length + 1)];
-            result.Add(new AirPlayDevice(id, display, properties.GetValueOrDefault("model") ?? "", address, service.Port));
+            result.Add(new AirPlayDevice(id, display, properties.GetValueOrDefault("model") ?? "", address, service.Port)
+            {
+                PairId = NullIfEmpty(properties.GetValueOrDefault("tsid")),
+                PairName = NullIfEmpty(properties.GetValueOrDefault("gpn")),
+                PairLeader = (StatusFlags(properties.GetValueOrDefault("flags")) & TightSyncIsGroupLeader) != 0,
+            });
         }
         return result;
+    }
+
+    private const long TightSyncIsGroupLeader = 1L << 13;
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static long StatusFlags(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return 0;
+        var hex = value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? value[2..] : value;
+        return long.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out long flags) ? flags : 0;
     }
 
     private static Dictionary<string, string> ParseTxt(ReadOnlySpan<byte> data)

@@ -34,11 +34,62 @@ public interface IPcmSource
     void Read(Span<short> interleaved);
 }
 
+/// <summary>Which part of the stereo signal a HomePod plays. Left and Right send that channel to both of the
+/// HomePod's channels, so one HomePod per side makes a stereo pair.</summary>
+public enum ChannelMode
+{
+    Stereo,
+    Left,
+    Right,
+}
+
 public sealed record SessionOptions(
     string ClientName,
     string DeviceId,
     int LatencyFrames,
-    bool NetworkPriority = true);
+    bool NetworkPriority = true,
+    ChannelMode Channel = ChannelMode.Stereo);
+
+/// <summary>One timeline for every HomePod in a group: the same start time and the same NTP start mean packet N
+/// carries the same audio and is played at the same instant on each of them.</summary>
+public sealed class StreamTimeline
+{
+    public long StartTicks { get; } = Stopwatch.GetTimestamp();
+    public ulong StartNtp { get; }
+
+    public StreamTimeline() => StartNtp = AirPlaySession.NtpAt(StartTicks);
+}
+
+/// <summary>Reads each packet's audio from the capture once and hands the same samples to every session that asks
+/// for that packet number, so a group never splits the capture between its HomePods.</summary>
+public sealed class PacketFanout(IPcmSource source)
+{
+    private const int Slots = 256;   // About two seconds of packets, far more than sessions drift apart.
+    private readonly short[][] _cache = Enumerable.Range(0, Slots).Select(_ => new short[AirPlaySession.FramesPerPacket * 2]).ToArray();
+    private readonly long[] _index = Enumerable.Repeat(-1L, Slots).ToArray();
+    private readonly object _gate = new();
+    private long _newest = -1;
+
+    public void Read(long packet, Span<short> destination)
+    {
+        lock (_gate)
+        {
+            int slot = (int)(packet % Slots);
+            if (_index[slot] != packet)
+            {
+                if (packet <= _newest)
+                {
+                    destination.Clear();   // Too old to still be cached: a session that stalled for seconds.
+                    return;
+                }
+                source.Read(_cache[slot]);
+                _index[slot] = packet;
+                _newest = packet;
+            }
+            _cache[slot].CopyTo(destination);
+        }
+    }
+}
 
 /// <summary>A single AirPlay 2 realtime audio session. Pairing is transient (HAP transient),
 /// so no PIN or long-term keys are needed. See NOTICE for where the protocol steps come from.</summary>
@@ -97,8 +148,8 @@ public sealed class AirPlaySession : IDisposable
 
     // Time base: the wall clock is read once, everything after comes from the monotonic counter,
     // so a Windows clock sync in the middle of a session cannot shift the timeline.
-    private readonly long _baseTicks = Stopwatch.GetTimestamp();
-    private readonly ulong _baseNtp = ToNtp(DateTime.UtcNow);
+    private static readonly long BaseTicks = Stopwatch.GetTimestamp();
+    private static readonly ulong BaseNtp = ToNtp(DateTime.UtcNow);
 
     private readonly CancellationTokenSource _stop = new();
     private Thread? _audioThread;
@@ -572,10 +623,13 @@ public sealed class AirPlaySession : IDisposable
 
     // ---------------------------------------------------------------- audio
 
-    public void StartStreaming(IPcmSource source)
+    public void StartStreaming(IPcmSource source) => StartStreaming(new PacketFanout(source), new StreamTimeline());
+
+    /// <summary>Starts sending on a timeline shared with the other HomePods of a group.</summary>
+    public void StartStreaming(PacketFanout source, StreamTimeline timeline)
     {
         if (_options.NetworkPriority) _wifi = new NetworkPriority.WifiStreamingMode(_log);
-        _audioThread = new Thread(() => AudioLoop(source))
+        _audioThread = new Thread(() => AudioLoop(source, timeline))
         {
             IsBackground = true,
             Name = "AirPlay audio",
@@ -585,7 +639,7 @@ public sealed class AirPlaySession : IDisposable
         _ = Task.Run(FeedbackLoop);
     }
 
-    private void AudioLoop(IPcmSource source)
+    private void AudioLoop(PacketFanout source, StreamTimeline timeline)
     {
         using var mmcss = NativeTiming.EnterProAudio();
         using var timer = new NativeTiming.PreciseTimer();
@@ -600,9 +654,10 @@ public sealed class AirPlaySession : IDisposable
         ulong nonceCounter = 0;
         long framesSent = 0;
         bool first = true;
-        long start = Stopwatch.GetTimestamp();
-        ulong startNtp = NtpNow();
+        long start = timeline.StartTicks;
+        ulong startNtp = timeline.StartNtp;
         long nextSync = start;
+        var channel = _options.Channel;
         uint latency = (uint)_options.LatencyFrames;
         var syncPacket = new byte[20];
 
@@ -617,7 +672,8 @@ public sealed class AirPlaySession : IDisposable
             int burst = 0;
             while (framesSent + FramesPerPacket <= target && burst++ < MaxBurstPackets)
             {
-                source.Read(pcm);
+                source.Read(framesSent / FramesPerPacket, pcm);
+                if (channel != ChannelMode.Stereo) PickChannel(pcm, channel);
                 packet[0] = 0x80;
                 packet[1] = first ? (byte)0xE0 : (byte)0x60;
                 BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(2), seq);
@@ -736,12 +792,30 @@ public sealed class AirPlaySession : IDisposable
         return seconds << 32 | fraction;
     }
 
-    private ulong NtpNow()
+    /// <summary>Copies one channel into both, for a HomePod that plays one side of a stereo pair.</summary>
+    internal static void PickChannel(Span<short> interleaved, ChannelMode channel)
     {
-        long elapsed = Stopwatch.GetTimestamp() - _baseTicks;
-        ulong seconds = (ulong)(elapsed / Stopwatch.Frequency);
-        ulong remainder = (ulong)(elapsed % Stopwatch.Frequency);
-        return _baseNtp + (seconds << 32) + (remainder << 32) / (ulong)Stopwatch.Frequency;
+        int keep = channel == ChannelMode.Left ? 0 : 1;
+        for (int i = 0; i < interleaved.Length; i += 2)
+        {
+            short sample = interleaved[i + keep];
+            interleaved[i] = sample;
+            interleaved[i + 1] = sample;
+        }
+    }
+
+    private static ulong NtpNow() => NtpAt(Stopwatch.GetTimestamp());
+
+    /// <summary>NTP time of a Stopwatch timestamp. The timestamp may predate the clock base (a timeline created just
+    /// before this class is first touched), so the offset is computed in either direction.</summary>
+    internal static ulong NtpAt(long ticks)
+    {
+        long elapsed = ticks - BaseTicks;
+        ulong magnitude = (ulong)Math.Abs(elapsed);
+        ulong seconds = magnitude / (ulong)Stopwatch.Frequency;
+        ulong remainder = magnitude % (ulong)Stopwatch.Frequency;
+        ulong offset = (seconds << 32) + (remainder << 32) / (ulong)Stopwatch.Frequency;
+        return elapsed >= 0 ? BaseNtp + offset : BaseNtp - offset;
     }
 
     // ---------------------------------------------------------------- shutdown
