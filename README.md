@@ -276,13 +276,14 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 ## Changelog
 
-### Unreleased
+### 2.2.0
 
 - **Volume and mute keys go straight to the HomePod** while streaming. PodBridge takes the keys itself, so the computer's speakers are never unmuted for a moment by volume up. The mute key mutes the HomePod; the next press or a volume key brings the sound back.
 - **Volume pop-up**: since the keys no longer reach Windows, PodBridge shows a pop-up like the Windows 11 one, with a HomePod icon and the HomePod level.
 - **Stereo with two HomePods (experimental)**: a stereo pair from the Home app shows up as one entry, and any two other HomePods can be made a left/right pair with the **Stereo…** link in the panel. Both HomePods play on one shared timeline.
 - **Network priority can be turned off** in the tray menu, and the log now records capture skips and the age of each retransmit request, to track down crackles.
 - **New panel option, Volume keys control the HomePod** (on by default), to leave the keys to the computer. The link no longer depends on Mute computer speakers.
+- **Windows 11 style menus and dialog**: the tray menu, the stereo picker and the latency presets window have rounded corners, Windows 11 buttons and fields, and follow the Windows light or dark theme.
 - If you stop streaming while the HomePod is muted, its previous volume is restored.
 - After a short Wi-Fi drop, the HomePod sometimes closes the new session while it cleans up the old one. PodBridge took that for another device taking over and gave up; it now keeps reconnecting for a minute after a drop.
 
