@@ -312,7 +312,8 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 - Release binaries are built from this repository by the [Release workflow](.github/workflows/release.yml) on GitHub-hosted runners, never on a personal computer. The workflow runs the self-test before anything is signed.
 - Only `PodBridge.exe` built from this repository is signed. Third-party libraries (NAudio) are not signed by this project.
-- Every signing request is approved by hand.
+- Only tag builds (`v*`) are signed, and every signing request is approved by hand. The signed file's product name and version must match `PodBridge` and the version in `PodBridge.csproj`.
+- Everyone on the team uses multi-factor authentication for GitHub and SignPath.
 - Releases published before the signing setup was in place (1.0.0 and the first 2.0.0 build) are unsigned.
 
 Team roles:
