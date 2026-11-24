@@ -228,7 +228,6 @@ public sealed class AppController : ApplicationContext
         foreach (var (value, label) in new[] { (UiLanguage.English, "English"), (UiLanguage.Turkish, "Türkçe") })
             language.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetLanguage(value)) { Checked = L.Current == value });
         menu.Items.Add(language);
-        menu.Items.Add(BuildStereoMenu());
         menu.Items.Add(new ToolStripSeparator());
         if (_updateReady is { } ready)
             menu.Items.Add(L.T($"Install version {ready} and restart", $"{ready} sürümünü kur ve yeniden başlat"), null, (_, _) => InstallUpdateWhenIdle(userAsked: true));
@@ -264,15 +263,22 @@ public sealed class AppController : ApplicationContext
 
     // ---------------------------------------------------------------- stereo with two HomePods
 
-    private ToolStripMenuItem BuildStereoMenu()
+    /// <summary>The picker behind the panel's "Stereo…" link.</summary>
+    public void ShowStereoMenu(Point screenLocation)
     {
-        var stereo = new ToolStripMenuItem(L.T("Stereo with two HomePods (experimental)", "İki HomePod ile stereo (deneysel)"));
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(new ToolStripMenuItem(L.T("Stereo with two HomePods (experimental)", "İki HomePod ile stereo (deneysel)")) { Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
+        foreach (ToolStripItem item in BuildStereoItems()) menu.Items.Add(item);
+        menu.Closed += (_, _) => _ui.Post(_ => menu.Dispose(), null);
+        menu.Show(screenLocation);
+    }
+
+    private List<ToolStripItem> BuildStereoItems()
+    {
         var singles = DeviceGroups.PairableSingles(Settings.KnownDevices);
         if (singles.Count < 2)
-        {
-            stereo.DropDownItems.Add(new ToolStripMenuItem(L.T("Needs two HomePods on the network", "Ağda iki HomePod gerekli")) { Enabled = false });
-            return stereo;
-        }
+            return [new ToolStripMenuItem(L.T("Needs two HomePods on the network", "Ağda iki HomePod gerekli")) { Enabled = false }];
         var left = new ToolStripMenuItem(L.T("Left speaker", "Sol hoparlör"));
         var right = new ToolStripMenuItem(L.T("Right speaker", "Sağ hoparlör"));
         foreach (var device in singles)
@@ -286,14 +292,16 @@ public sealed class AppController : ApplicationContext
                 Checked = Settings.StereoRightId == device.Id,
             });
         }
-        stereo.DropDownItems.Add(left);
-        stereo.DropDownItems.Add(right);
-        stereo.DropDownItems.Add(new ToolStripSeparator());
-        stereo.DropDownItems.Add(new ToolStripMenuItem(L.T("Remove the stereo pair", "Stereo çifti kaldır"), null, (_, _) => ClearStereo())
-        {
-            Enabled = Settings.StereoLeftId != null || Settings.StereoRightId != null,
-        });
-        return stereo;
+        return
+        [
+            left,
+            right,
+            new ToolStripSeparator(),
+            new ToolStripMenuItem(L.T("Remove the stereo pair", "Stereo çifti kaldır"), null, (_, _) => ClearStereo())
+            {
+                Enabled = Settings.StereoLeftId != null || Settings.StereoRightId != null,
+            },
+        ];
     }
 
     private void SetStereoSide(string id, bool isLeft)

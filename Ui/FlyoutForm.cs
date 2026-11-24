@@ -132,7 +132,18 @@ public sealed class FlyoutForm : Form
 
         DrawText(g, L.T("Stream to HomePod", "Sesi HomePod'a aktar"), bigFont, _text, x, y, w);
         y += S(24);
-        DrawText(g, StatusText(), smallFont, engine.State is BridgeState.NeedsFirewall or BridgeState.Failed ? _warn : _subtext, x, y, w);
+        // Small "Stereo…" link on the status line; it opens the left/right picker for two HomePods.
+        float statusWidth = w;
+        if (_app.Devices.Count > 0)
+        {
+            string stereo = L.T("Stereo…", "Stereo…");
+            var size = g.MeasureString(stereo, smallFont);
+            var link = new RectangleF(x + w - size.Width, y, size.Width, size.Height);
+            _hits.Add((link, () => _app.ShowStereoMenu(PointToScreen(new Point((int)link.Left, (int)link.Bottom))), "stereo"));
+            DrawText(g, stereo, smallFont, _accent, link.X, link.Y, link.Width + S(4));
+            statusWidth = w - size.Width - S(8);
+        }
+        DrawText(g, StatusText(), smallFont, engine.State is BridgeState.NeedsFirewall or BridgeState.Failed ? _warn : _subtext, x, y, statusWidth);
         y += S(26);
 
         if (_app.Devices.Count == 0)

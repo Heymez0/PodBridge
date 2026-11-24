@@ -38,6 +38,12 @@ internal static class Program
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
             var settings = new Settings { FirstRunDone = true };
             settings.KnownDevices.Add(new AirPlayDevice("AA:BB:CC:DD:EE:01", "Living Room", "AudioAccessory5,1", "192.168.1.50", 7000));
+            if (args.Contains("--stereo"))
+            {
+                settings.KnownDevices.Add(new AirPlayDevice("AA:BB:CC:DD:EE:02", "Kitchen", "AudioAccessory5,1", "192.168.1.51", 7000));
+                settings.StereoLeftId = "AA:BB:CC:DD:EE:01";
+                settings.StereoRightId = "AA:BB:CC:DD:EE:02";
+            }
             L.Current = Option(args, "--language") == "tr" ? UiLanguage.Turkish : UiLanguage.English;
             new AppController(settings).RenderPanelAndExit(imagePath);
             return 0;

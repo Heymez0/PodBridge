@@ -83,14 +83,14 @@ The tray icon shows a blue dot while streaming and an orange dot when something 
 
 While streaming, the volume up and down keys change the HomePod volume in 2% steps (hold to repeat), the mute key mutes and unmutes the HomePod, and the taskbar volume slider follows the HomePod. PodBridge takes the keys for itself during streaming, so Windows never unmutes the computer's speakers; instead of the Windows volume pop-up, PodBridge shows its own in the same place, with the HomePod level. When streaming stops, or with **Volume keys control the HomePod** turned off, the keys work on the computer as usual.
 
-Right-click the tray icon for **Open log folder**, **Language**, **Stereo with two HomePods**, **Check for updates**, **Update automatically**, **Prioritize audio on the network**, **Uninstall…** and **Exit**.
+Right-click the tray icon for **Open log folder**, **Language**, **Check for updates**, **Update automatically**, **Prioritize audio on the network**, **Uninstall…** and **Exit**.
 
 ### Stereo with two HomePods (experimental)
 
 There are two ways to play in stereo on two HomePods:
 
 - **A pair made in the Home app** shows up in the list as one entry, "Name (stereo pair)". PodBridge sends the full stereo signal to both HomePods; whether they split it into left and right is up to the HomePods. Reports from other AirPlay senders say original HomePods do and HomePod minis may play full stereo on both.
-- **A pair made in PodBridge** works with any two HomePods that are not paired in the Home app. In the tray menu, open **Stereo with two HomePods**, pick a **Left speaker** and a **Right speaker**, and a "Left + Right (stereo)" entry appears in the panel. PodBridge sends the left channel to one and the right channel to the other.
+- **A pair made in PodBridge** works with any two HomePods that are not paired in the Home app. In the panel, click the small **Stereo…** link at the top right, pick a **Left speaker** and a **Right speaker**, and a "Left + Right (stereo)" entry appears in the panel. PodBridge sends the left channel to one and the right channel to the other.
 
 Both HomePods get one session each on a single timeline: the audio is read from the capture once, every packet carries the same timestamp on both, and both sync to the same clock. Volume and the volume keys apply to both. If one HomePod drops out, both are restarted together. Both kinds are untested with real hardware so far; how closely two HomePods stay in step in this mode is not measured.
 
@@ -280,7 +280,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 - **Volume and mute keys go straight to the HomePod** while streaming. PodBridge takes the keys itself, so the computer's speakers are never unmuted for a moment by volume up. The mute key mutes the HomePod; the next press or a volume key brings the sound back.
 - **Volume pop-up**: since the keys no longer reach Windows, PodBridge shows a pop-up like the Windows 11 one, with a HomePod icon and the HomePod level.
-- **Stereo with two HomePods (experimental)**: a stereo pair from the Home app shows up as one entry, and any two other HomePods can be made a left/right pair from the tray menu. Both HomePods play on one shared timeline.
+- **Stereo with two HomePods (experimental)**: a stereo pair from the Home app shows up as one entry, and any two other HomePods can be made a left/right pair with the **Stereo…** link in the panel. Both HomePods play on one shared timeline.
 - **Network priority can be turned off** in the tray menu, and the log now records capture skips and the age of each retransmit request, to track down crackles.
 - **New panel option, Volume keys control the HomePod** (on by default), to leave the keys to the computer. The link no longer depends on Mute computer speakers.
 - If you stop streaming while the HomePod is muted, its previous volume is restored.
