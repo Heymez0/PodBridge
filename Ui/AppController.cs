@@ -16,6 +16,7 @@ public sealed class AppController : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly FlyoutForm _flyout;
     private readonly HotkeyWindow _hotkeys;
+    private readonly VolumeOsd _osd = new();
     private readonly StatusServer? _statusServer;
     private readonly System.Windows.Forms.Timer _browseTimer;
     private readonly SynchronizationContext _ui;
@@ -69,7 +70,9 @@ public sealed class AppController : ApplicationContext
             if (e.Category == UserPreferenceCategory.General) _ui.Post(_ => RefreshTrayIcons(), null);
         };
 
-        _hotkeys = new HotkeyWindow(ToggleLast, delta => Engine.StepVolume(delta), () => Engine.ToggleHomePodMute());
+        _hotkeys = new HotkeyWindow(ToggleLast,
+            delta => { Engine.StepVolume(delta); ShowVolumeOsd(); },
+            () => { Engine.ToggleHomePodMute(); ShowVolumeOsd(); });
         _browseTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _browseTimer.Tick += (_, _) => _ = RefreshDevicesAsync();
         _browseTimer.Start();
@@ -377,6 +380,12 @@ public sealed class AppController : ApplicationContext
         _flyout.Sync();
     }
 
+    /// <summary>The keys never reach Windows while streaming, so its own volume pop-up does not appear; show ours.</summary>
+    private void ShowVolumeOsd()
+    {
+        if (Engine.State == BridgeState.Streaming) _osd.ShowVolume(Engine.DisplayVolume, Engine.HomePodMuted);
+    }
+
     public void ToggleVolumeKeys()
     {
         bool value = !Settings.VolumeKeys;
@@ -471,6 +480,7 @@ public sealed class AppController : ApplicationContext
         _browseTimer.Stop();
         _updateTimer.Stop();
         _hotkeys.Dispose();
+        _osd.Dispose();
         _statusServer?.Dispose();
         Engine.Dispose();
         ExitThread();

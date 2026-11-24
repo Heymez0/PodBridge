@@ -46,6 +46,8 @@ public sealed class BridgeEngine : IDisposable
     public string Detail { get; private set; } = "";
     public double Volume => _volume;
     public bool HomePodMuted => _volumeBeforeMute != null;
+    /// <summary>The level to show: while muted, the level the HomePod returns to.</summary>
+    public double DisplayVolume => _volumeBeforeMute ?? Math.Max(_volume, 0);
     public long? ReceiverLatencyMs => _session?.ReceiverLatencyMs;
     public long PacketsRetransmitted => _session?.PacketsRetransmitted ?? 0;
     public long Underruns => _source?.Underruns ?? 0;

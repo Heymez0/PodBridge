@@ -42,6 +42,14 @@ internal static class Program
             new AppController(settings).RenderPanelAndExit(imagePath);
             return 0;
         }
+        if (Option(args, "--render-osd") is { } osdImage)
+        {
+            ApplicationConfiguration.Initialize();
+            float scale = float.Parse(Option(args, "--scale") ?? "1", System.Globalization.CultureInfo.InvariantCulture);
+            VolumeOsd.RenderTo(osdImage, double.Parse(Option(args, "--percent") ?? "42"), args.Contains("--muted"),
+                               args.Contains("--light"), scale);
+            return 0;
+        }
         if (Option(args, "--render-presets") is { } editorImage)
         {
             ApplicationConfiguration.Initialize();
