@@ -69,7 +69,7 @@ public sealed class AppController : ApplicationContext
             if (e.Category == UserPreferenceCategory.General) _ui.Post(_ => RefreshTrayIcons(), null);
         };
 
-        _hotkeys = new HotkeyWindow(ToggleLast, () => Engine.ToggleHomePodMute());
+        _hotkeys = new HotkeyWindow(ToggleLast, delta => Engine.StepVolume(delta), () => Engine.ToggleHomePodMute());
         _browseTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _browseTimer.Tick += (_, _) => _ = RefreshDevicesAsync();
         _browseTimer.Start();
@@ -377,6 +377,20 @@ public sealed class AppController : ApplicationContext
         _flyout.Sync();
     }
 
+    public void ToggleVolumeKeys()
+    {
+        bool value = !Settings.VolumeKeys;
+        Settings.VolumeKeys = value;
+        Task.Run(() => Engine.SetVolumeKeys(value));
+        UpdateVolumeKeys();
+        _flyout.Sync();
+    }
+
+    /// <summary>While streaming (and unless turned off) the volume and mute keys go to PodBridge instead of Windows.
+    /// Taking the keys means Windows never unmutes the computer's speakers, so nothing leaks from them.</summary>
+    private void UpdateVolumeKeys() =>
+        _hotkeys.SetVolumeKeysActive(Engine.State == BridgeState.Streaming && Settings.VolumeKeys);
+
     public void ToggleAutoConnect()
     {
         Settings.AutoConnect = !Settings.AutoConnect;
@@ -507,8 +521,7 @@ public sealed class AppController : ApplicationContext
                 _tray.ShowBalloonTip(5000, "PodBridge", Engine.Detail, ToolTipIcon.Warning);
             else if (state == BridgeState.NeedsFirewall)
                 _flyout.ShowNearTray();
-            // While streaming the mute key mutes the HomePod; otherwise Windows handles it as usual.
-            _hotkeys.SetMuteKeyActive(state == BridgeState.Streaming);
+            UpdateVolumeKeys();
             if (_updateReady != null && Settings.AutoUpdate && state is BridgeState.Idle or BridgeState.TakenOver)
                 InstallAfterQuietPeriod();
             _lastState = state;
@@ -517,16 +530,18 @@ public sealed class AppController : ApplicationContext
         _flyout.Sync();
     }
 
-    /// <summary>Invisible window for the Ctrl+Alt+P hotkey and, while streaming, the mute key.</summary>
+    /// <summary>Invisible window for the Ctrl+Alt+P hotkey and, while streaming, the volume and mute keys.</summary>
     private sealed class HotkeyWindow : NativeWindow, IDisposable
     {
         private const int WmHotkey = 0x0312;
         private const uint ModAlt = 1, ModControl = 2, ModNoRepeat = 0x4000;
-        private const int MuteHotkeyId = HotkeyId + 1;
-        private const uint VkVolumeMute = 0xAD;
+        private const int MuteHotkeyId = HotkeyId + 1, DownHotkeyId = HotkeyId + 2, UpHotkeyId = HotkeyId + 3;
+        private const uint VkVolumeMute = 0xAD, VkVolumeDown = 0xAE, VkVolumeUp = 0xAF;
+        private const int VolumeStep = 2;
         private readonly Action _action;
+        private readonly Action<int> _step;
         private readonly Action _mute;
-        private bool _muteRegistered;
+        private bool _volumeKeysRegistered;
 
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
@@ -534,37 +549,45 @@ public sealed class AppController : ApplicationContext
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hwnd, int id);
 
-        public HotkeyWindow(Action action, Action mute)
+        public HotkeyWindow(Action action, Action<int> step, Action mute)
         {
             _action = action;
+            _step = step;
             _mute = mute;
             CreateHandle(new CreateParams());
             if (!RegisterHotKey(Handle, HotkeyId, ModAlt | ModControl | ModNoRepeat, (uint)Keys.P))
                 Log.Write("Ctrl+Alt+P is already used by another app");
         }
 
-        /// <summary>A registered hotkey goes to this window instead of Windows, so while streaming the mute key mutes
-        /// the HomePod rather than toggling the computer's speakers.</summary>
-        public void SetMuteKeyActive(bool active)
+        /// <summary>A registered hotkey goes to this window instead of Windows. Volume up and down repeat while held,
+        /// like the Windows keys do; mute does not.</summary>
+        public void SetVolumeKeysActive(bool active)
         {
-            if (active == _muteRegistered) return;
+            if (active == _volumeKeysRegistered) return;
             if (active)
             {
-                _muteRegistered = RegisterHotKey(Handle, MuteHotkeyId, ModNoRepeat, VkVolumeMute);
-                if (!_muteRegistered) Log.Write("The mute key is already taken by another app");
+                bool up = RegisterHotKey(Handle, UpHotkeyId, 0, VkVolumeUp);
+                bool down = RegisterHotKey(Handle, DownHotkeyId, 0, VkVolumeDown);
+                bool mute = RegisterHotKey(Handle, MuteHotkeyId, ModNoRepeat, VkVolumeMute);
+                if (!(up && down && mute)) Log.Write($"Some volume keys are taken by another app (up {up}, down {down}, mute {mute})");
             }
             else
             {
+                UnregisterHotKey(Handle, UpHotkeyId);
+                UnregisterHotKey(Handle, DownHotkeyId);
                 UnregisterHotKey(Handle, MuteHotkeyId);
-                _muteRegistered = false;
             }
+            _volumeKeysRegistered = active;
         }
 
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WmHotkey)
             {
-                if (m.WParam == MuteHotkeyId) _mute();
+                int id = (int)m.WParam;
+                if (id == UpHotkeyId) _step(VolumeStep);
+                else if (id == DownHotkeyId) _step(-VolumeStep);
+                else if (id == MuteHotkeyId) _mute();
                 else _action();
             }
             base.WndProc(ref m);
@@ -572,7 +595,7 @@ public sealed class AppController : ApplicationContext
 
         public void Dispose()
         {
-            SetMuteKeyActive(false);
+            SetVolumeKeysActive(false);
             UnregisterHotKey(Handle, HotkeyId);
             DestroyHandle();
         }

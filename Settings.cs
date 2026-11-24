@@ -41,6 +41,7 @@ public sealed class Settings
     public int BalancedBufferMs { get; set; } = DefaultBalancedBufferMs;
     public int StableBufferMs { get; set; } = DefaultStableBufferMs;
     public bool MuteLocal { get; set; } = true;
+    public bool VolumeKeys { get; set; } = true;
     public bool AutoConnect { get; set; }
     public bool FirstRunDone { get; set; }
     public bool AutoUpdate { get; set; } = true;

@@ -16,6 +16,7 @@ public sealed class LocalOutputControl : IDisposable
     private float _lastScalar;
     private int _remuting;
     private bool _muteSpeakers;
+    private bool _linkVolume;
 
     public LocalOutputControl(Settings settings, Action<double> onVolume)
     {
@@ -42,7 +43,7 @@ public sealed class LocalOutputControl : IDisposable
         settings.Save();
     }
 
-    public void Attach(string deviceId, double homePodPercent, bool muteSpeakers)
+    public void Attach(string deviceId, double homePodPercent, bool muteSpeakers, bool linkVolume)
     {
         Detach();
         _enumerator = new MMDeviceEnumerator();
@@ -58,8 +59,14 @@ public sealed class LocalOutputControl : IDisposable
         _settings.Save();
 
         _muteSpeakers = muteSpeakers;
-        _lastScalar = (float)(homePodPercent / 100.0);
-        volume.MasterVolumeLevelScalar = _lastScalar;
+        _linkVolume = linkVolume;
+        _lastScalar = volume.MasterVolumeLevelScalar;
+        if (linkVolume)
+        {
+            // The Windows slider shows the HomePod's level while they are linked.
+            _lastScalar = (float)(homePodPercent / 100.0);
+            volume.MasterVolumeLevelScalar = _lastScalar;
+        }
         // Without muting, the speakers simply play at the HomePod's level.
         volume.Mute = muteSpeakers;
         volume.OnVolumeNotification += OnNotification;
@@ -68,7 +75,7 @@ public sealed class LocalOutputControl : IDisposable
     /// <summary>Keeps the Windows indicator in line when the slider in our UI moves.</summary>
     public void Reflect(double homePodPercent)
     {
-        if (_device == null) return;
+        if (_device == null || !_linkVolume) return;
         _lastScalar = (float)(homePodPercent / 100.0);
         try { _device.AudioEndpointVolume.MasterVolumeLevelScalar = _lastScalar; }
         catch (Exception ex) { Log.Write($"Could not set the Windows volume: {ex.Message}"); }
@@ -87,7 +94,8 @@ public sealed class LocalOutputControl : IDisposable
             });
         }
 
-        if (Math.Abs(data.MasterVolume - _lastScalar) > Epsilon)
+        // The taskbar slider and other apps change the level here; the volume keys are taken by PodBridge directly.
+        if (_linkVolume && Math.Abs(data.MasterVolume - _lastScalar) > Epsilon)
         {
             _lastScalar = data.MasterVolume;
             _onVolume(data.MasterVolume * 100.0);

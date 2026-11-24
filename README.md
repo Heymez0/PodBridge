@@ -73,14 +73,15 @@ Click the tray icon to open the panel.
 | Volume | HomePod volume. The Windows volume keys do the same while streaming. |
 | Latency: Low / Balanced / Stable | Buffer size of the stream. Takes effect immediately; an active stream reconnects for a moment. |
 | Latency: Edit | Change the buffer length of each preset (50 to 2000 ms). |
-| Mute computer speakers | Mutes the local speakers while streaming. The volume keys control the HomePod either way. |
+| Mute computer speakers | Mutes the local speakers while streaming. |
+| Volume keys control the HomePod | While streaming, the volume and mute keys and the taskbar volume slider control the HomePod. Turn off to keep them on the computer. |
 | Start with Windows | Adds or removes PodBridge from startup. |
 | Connect automatically at startup | Reconnects to the last HomePod when PodBridge starts. |
 
 The tray icon shows a blue dot while streaming and an orange dot when something needs attention.
 `Ctrl+Alt+P` connects to or disconnects from the last used HomePod.
 
-While streaming, the volume up and down keys (and the taskbar volume slider) set the HomePod volume, and the mute key mutes and unmutes the HomePod. A volume key press also unmutes. When streaming stops, the keys go back to controlling the computer.
+While streaming, the volume up and down keys change the HomePod volume in 2% steps (hold to repeat), the mute key mutes and unmutes the HomePod, and the taskbar volume slider follows the HomePod. PodBridge takes the keys for itself during streaming, so Windows never unmutes the computer's speakers; the Windows volume pop-up does not appear then. When streaming stops, or with **Volume keys control the HomePod** turned off, the keys work on the computer as usual.
 
 Right-click the tray icon for **Open log folder**, **Language**, **Check for updates**, **Update automatically**, **Uninstall…** and **Exit**.
 The interface language is English or Türkçe; the default follows the Windows display language.
@@ -247,7 +248,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 | `PodBridge --measure --ip <ip> --latency 5292 --volume 25` | Measure end-to-end latency with the microphone (data stays in memory) |
 | `PodBridge --sweep --ip <ip> --values 200,150,120,100 --seconds 15` | Play the PC audio with a series of buffers to find the smallest clean one by ear |
 | `PodBridge --probe-volume` | Check that loopback capture is independent of the endpoint volume |
-| `PodBridge --probe-keys` | Press the volume and mute keys in software and check that they would reach the HomePod; the speakers stay muted and are restored |
+| `PodBridge --probe-keys` | Press the volume and mute keys in software and check that they reach PodBridge without unmuting the speakers; volume and mute are restored |
 | `PodBridge --audio-status` | List output devices and the apps playing on them |
 | `PodBridge --render-ui <png> [--language tr]` | Render the panel to an image |
 
@@ -265,8 +266,8 @@ PodBridge --write-extension-icons BrowserExtension/icons
 
 ### Unreleased
 
-- **Mute key mutes the HomePod** while streaming; the next press or a volume key brings the sound back.
-- **Volume keys control the HomePod even with "Mute computer speakers" off.** Before, the link only worked with that option on.
+- **Volume and mute keys go straight to the HomePod** while streaming. PodBridge takes the keys itself, so the computer's speakers are never unmuted for a moment by volume up. The mute key mutes the HomePod; the next press or a volume key brings the sound back.
+- **New panel option, Volume keys control the HomePod** (on by default), to leave the keys to the computer. The link no longer depends on Mute computer speakers.
 - If you stop streaming while the HomePod is muted, its previous volume is restored.
 - After a short Wi-Fi drop, the HomePod sometimes closes the new session while it cleans up the old one. PodBridge took that for another device taking over and gave up; it now keeps reconnecting for a minute after a drop.
 

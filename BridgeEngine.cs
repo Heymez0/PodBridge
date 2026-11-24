@@ -248,11 +248,12 @@ public sealed class BridgeEngine : IDisposable
     {
         if (_capturedDeviceId is not { } deviceId || _volume < 0) return;
         bool mute = _settings.MuteLocal;
+        bool link = _settings.VolumeKeys;
         Task.Run(() =>
         {
             try
             {
-                _localOutput.Attach(deviceId, _volume, mute);
+                _localOutput.Attach(deviceId, _volume, mute, link);
                 _localAttached = true;
             }
             catch (Exception ex)
@@ -280,6 +281,26 @@ public sealed class BridgeEngine : IDisposable
     }
 
     public Task SetVolumeAsync(double percent) => ApplyVolumeAsync(percent, fromWindows: false);
+
+    /// <summary>Turns the link between the Windows volume and the HomePod on or off while streaming.</summary>
+    public void SetVolumeKeys(bool enabled)
+    {
+        _settings.VolumeKeys = enabled;
+        _settings.Save();
+        if (State != BridgeState.Streaming) return;
+        DetachLocalOutput();
+        AttachLocalOutput();
+    }
+
+    /// <summary>A volume key: changes the HomePod by the same 2% step Windows uses. Starting from the muted level
+    /// if the HomePod is muted, like Windows does, so the key also unmutes.</summary>
+    public void StepVolume(int delta)
+    {
+        if (State != BridgeState.Streaming || _volume < 0) return;
+        double from = _volumeBeforeMute ?? _volume;
+        double target = Math.Clamp(Math.Round((from + delta) / 2) * 2, 0, 100);
+        _ = ApplyVolumeAsync(target, fromWindows: false);
+    }
 
     /// <summary>The mute key: silences the HomePod and brings back the previous level on the next press. The Windows
     /// volume is left alone, so a volume key press also unmutes, at the new level.</summary>

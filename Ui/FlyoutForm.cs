@@ -109,7 +109,7 @@ public sealed class FlyoutForm : Form
         float h = Pad + 44;
         h += Math.Max(_app.Devices.Count, 1) * (RowHeight + 4);
         if (_app.Engine.State == BridgeState.NeedsFirewall) h += 72;
-        h += 58 + 8 + 70 + 3 * 36 + Pad;
+        h += 58 + 8 + 70 + 4 * 36 + Pad;
         return (int)S(h);
     }
 
@@ -210,6 +210,7 @@ public sealed class FlyoutForm : Form
         y += S(50);
 
         DrawCheck(g, L.T("Mute computer speakers", "Bilgisayar hoparlörünü sustur"), _app.Settings.MuteLocal, x, ref y, w, smallFont, "mute", () => _app.ToggleMuteLocal());
+        DrawCheck(g, L.T("Volume keys control the HomePod", "Ses tuşları HomePod'u yönetsin"), _app.Settings.VolumeKeys, x, ref y, w, smallFont, "volumekeys", () => _app.ToggleVolumeKeys());
         DrawCheck(g, L.T("Start with Windows", "Windows ile başlat"), _app.AutoStart, x, ref y, w, smallFont, "autostart", () => _app.ToggleAutoStart());
         DrawCheck(g, L.T("Connect automatically at startup", "Açılışta otomatik bağlan"), _app.Settings.AutoConnect, x, ref y, w, smallFont, "autoconnect", () => _app.ToggleAutoConnect());
     }
