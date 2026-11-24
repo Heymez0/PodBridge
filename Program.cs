@@ -103,6 +103,11 @@ internal static class Program
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             return Task.Run(LatencyMeter.PrintAudioStatus).GetAwaiter().GetResult();
         }
+        if (args.Contains("--probe-keys"))
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            return KeyProbe.Run();
+        }
         if (args.Contains("--probe-volume"))
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;

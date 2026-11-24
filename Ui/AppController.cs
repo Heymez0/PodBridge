@@ -69,7 +69,7 @@ public sealed class AppController : ApplicationContext
             if (e.Category == UserPreferenceCategory.General) _ui.Post(_ => RefreshTrayIcons(), null);
         };
 
-        _hotkeys = new HotkeyWindow(ToggleLast);
+        _hotkeys = new HotkeyWindow(ToggleLast, () => Engine.ToggleHomePodMute());
         _browseTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _browseTimer.Tick += (_, _) => _ = RefreshDevicesAsync();
         _browseTimer.Start();
@@ -507,6 +507,8 @@ public sealed class AppController : ApplicationContext
                 _tray.ShowBalloonTip(5000, "PodBridge", Engine.Detail, ToolTipIcon.Warning);
             else if (state == BridgeState.NeedsFirewall)
                 _flyout.ShowNearTray();
+            // While streaming the mute key mutes the HomePod; otherwise Windows handles it as usual.
+            _hotkeys.SetMuteKeyActive(state == BridgeState.Streaming);
             if (_updateReady != null && Settings.AutoUpdate && state is BridgeState.Idle or BridgeState.TakenOver)
                 InstallAfterQuietPeriod();
             _lastState = state;
@@ -515,12 +517,16 @@ public sealed class AppController : ApplicationContext
         _flyout.Sync();
     }
 
-    /// <summary>Invisible window for the Ctrl+Alt+P hotkey.</summary>
+    /// <summary>Invisible window for the Ctrl+Alt+P hotkey and, while streaming, the mute key.</summary>
     private sealed class HotkeyWindow : NativeWindow, IDisposable
     {
         private const int WmHotkey = 0x0312;
         private const uint ModAlt = 1, ModControl = 2, ModNoRepeat = 0x4000;
+        private const int MuteHotkeyId = HotkeyId + 1;
+        private const uint VkVolumeMute = 0xAD;
         private readonly Action _action;
+        private readonly Action _mute;
+        private bool _muteRegistered;
 
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
@@ -528,22 +534,45 @@ public sealed class AppController : ApplicationContext
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hwnd, int id);
 
-        public HotkeyWindow(Action action)
+        public HotkeyWindow(Action action, Action mute)
         {
             _action = action;
+            _mute = mute;
             CreateHandle(new CreateParams());
             if (!RegisterHotKey(Handle, HotkeyId, ModAlt | ModControl | ModNoRepeat, (uint)Keys.P))
                 Log.Write("Ctrl+Alt+P is already used by another app");
         }
 
+        /// <summary>A registered hotkey goes to this window instead of Windows, so while streaming the mute key mutes
+        /// the HomePod rather than toggling the computer's speakers.</summary>
+        public void SetMuteKeyActive(bool active)
+        {
+            if (active == _muteRegistered) return;
+            if (active)
+            {
+                _muteRegistered = RegisterHotKey(Handle, MuteHotkeyId, ModNoRepeat, VkVolumeMute);
+                if (!_muteRegistered) Log.Write("The mute key is already taken by another app");
+            }
+            else
+            {
+                UnregisterHotKey(Handle, MuteHotkeyId);
+                _muteRegistered = false;
+            }
+        }
+
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == WmHotkey) _action();
+            if (m.Msg == WmHotkey)
+            {
+                if (m.WParam == MuteHotkeyId) _mute();
+                else _action();
+            }
             base.WndProc(ref m);
         }
 
         public void Dispose()
         {
+            SetMuteKeyActive(false);
             UnregisterHotKey(Handle, HotkeyId);
             DestroyHandle();
         }

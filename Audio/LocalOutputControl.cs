@@ -2,9 +2,9 @@ using NAudio.CoreAudioApi;
 
 namespace PodBridge.Audio;
 
-/// <summary>While streaming, mutes the computer's speakers and ties the Windows volume to the HomePod:
-/// the volume keys and the taskbar slider control the HomePod directly. Everything is restored on release.
-/// Loopback capture is not affected by the endpoint mute.</summary>
+/// <summary>While streaming, ties the Windows volume to the HomePod: the volume keys and the taskbar slider control
+/// the HomePod directly. Optionally also mutes the computer's speakers. Everything is restored on release.
+/// Loopback capture is not affected by the endpoint volume or mute.</summary>
 public sealed class LocalOutputControl : IDisposable
 {
     private const float Epsilon = 0.004f;
@@ -15,6 +15,7 @@ public sealed class LocalOutputControl : IDisposable
     private MMDevice? _device;
     private float _lastScalar;
     private int _remuting;
+    private bool _muteSpeakers;
 
     public LocalOutputControl(Settings settings, Action<double> onVolume)
     {
@@ -41,7 +42,7 @@ public sealed class LocalOutputControl : IDisposable
         settings.Save();
     }
 
-    public void Attach(string deviceId, double homePodPercent)
+    public void Attach(string deviceId, double homePodPercent, bool muteSpeakers)
     {
         Detach();
         _enumerator = new MMDeviceEnumerator();
@@ -56,9 +57,11 @@ public sealed class LocalOutputControl : IDisposable
         };
         _settings.Save();
 
+        _muteSpeakers = muteSpeakers;
         _lastScalar = (float)(homePodPercent / 100.0);
         volume.MasterVolumeLevelScalar = _lastScalar;
-        volume.Mute = true;
+        // Without muting, the speakers simply play at the HomePod's level.
+        volume.Mute = muteSpeakers;
         volume.OnVolumeNotification += OnNotification;
     }
 
@@ -74,7 +77,7 @@ public sealed class LocalOutputControl : IDisposable
     private void OnNotification(AudioVolumeNotificationData data)
     {
         // Windows unmutes when the volume-up key is pressed; mute again right away so the speakers do not blare.
-        if (!data.Muted && Interlocked.Exchange(ref _remuting, 1) == 0)
+        if (_muteSpeakers && !data.Muted && Interlocked.Exchange(ref _remuting, 1) == 0)
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {

@@ -36,6 +36,7 @@ public sealed class BridgeEngine : IDisposable
     private string? _capturedDeviceId;
     private bool _localAttached;
     private double _volume = -1;
+    private double? _volumeBeforeMute;
     private DateTime _lastVolumeSent;
     private readonly SemaphoreSlim _volumeGate = new(1, 1);
 
@@ -43,6 +44,7 @@ public sealed class BridgeEngine : IDisposable
     public AirPlayDevice? Device { get; private set; }
     public string Detail { get; private set; } = "";
     public double Volume => _volume;
+    public bool HomePodMuted => _volumeBeforeMute != null;
     public long? ReceiverLatencyMs => _session?.ReceiverLatencyMs;
     public long PacketsRetransmitted => _session?.PacketsRetransmitted ?? 0;
     public long Underruns => _source?.Underruns ?? 0;
@@ -119,6 +121,7 @@ public sealed class BridgeEngine : IDisposable
 
                     await session.ConnectAsync(ct).ConfigureAwait(false);
                     _session = session;
+                    _volumeBeforeMute = null;
                     session.StartStreaming(source);
                     startedAt = DateTime.UtcNow;
 
@@ -152,6 +155,14 @@ public sealed class BridgeEngine : IDisposable
                         // TEARDOWN has to go out before the using block disposes the session, or the HomePod stays busy for a while.
                         DetachLocalOutput();
                         _session = null;
+                        // Muted with the mute key: give the HomePod its volume back, or it starts silent next time.
+                        if (_volumeBeforeMute is { } restore)
+                        {
+                            _volumeBeforeMute = null;
+                            _volume = restore;
+                            try { await session.SetVolumeAsync(restore).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+                            catch (Exception ex) { Log.Write($"Could not restore volume: {ex.Message}"); }
+                        }
                         await session.StopAsync().ConfigureAwait(false);
                         throw;
                     }
@@ -229,12 +240,13 @@ public sealed class BridgeEngine : IDisposable
 
     private void AttachLocalOutput()
     {
-        if (!_settings.MuteLocal || _capturedDeviceId is not { } deviceId || _volume < 0) return;
+        if (_capturedDeviceId is not { } deviceId || _volume < 0) return;
+        bool mute = _settings.MuteLocal;
         Task.Run(() =>
         {
             try
             {
-                _localOutput.Attach(deviceId, _volume);
+                _localOutput.Attach(deviceId, _volume, mute);
                 _localAttached = true;
             }
             catch (Exception ex)
@@ -256,14 +268,31 @@ public sealed class BridgeEngine : IDisposable
         _settings.MuteLocal = mute;
         _settings.Save();
         if (State != BridgeState.Streaming) return;
-        if (mute) AttachLocalOutput();
-        else DetachLocalOutput();
+        // The volume link stays either way; only whether the speakers are muted changes.
+        DetachLocalOutput();
+        AttachLocalOutput();
     }
 
     public Task SetVolumeAsync(double percent) => ApplyVolumeAsync(percent, fromWindows: false);
 
-    private async Task ApplyVolumeAsync(double percent, bool fromWindows)
+    /// <summary>The mute key: silences the HomePod and brings back the previous level on the next press. The Windows
+    /// volume is left alone, so a volume key press also unmutes, at the new level.</summary>
+    public void ToggleHomePodMute()
     {
+        if (State != BridgeState.Streaming || _volume < 0) return;
+        if (_volumeBeforeMute is { } previous)
+        {
+            _ = ApplyVolumeAsync(previous, fromWindows: true);
+            return;
+        }
+        double current = _volume;
+        _ = ApplyVolumeAsync(0, fromWindows: true, muting: true);
+        _volumeBeforeMute = current;
+    }
+
+    private async Task ApplyVolumeAsync(double percent, bool fromWindows, bool muting = false)
+    {
+        if (!muting) _volumeBeforeMute = null;
         percent = Math.Clamp(percent, 0, 100);
         _volume = percent;
         Changed?.Invoke();
