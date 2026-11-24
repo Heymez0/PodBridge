@@ -69,7 +69,7 @@ public static class ModernMenu
         protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
         {
             var r = e.ImageRectangle;
-            var bounds = new RectangleF(r.X + (r.Width - 14) / 2f, e.Item.ContentRectangle.Top + (e.Item.ContentRectangle.Height - 14) / 2f, 14, 14);
+            var bounds = new RectangleF(r.X + (r.Width - 18) / 2f, e.Item.ContentRectangle.Top + (e.Item.ContentRectangle.Height - 18) / 2f, 18, 18);
             e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             Glyphs.Draw(e.Graphics, CheckGlyph, e.Item.Enabled ? P.Text : P.Disabled, bounds);
         }

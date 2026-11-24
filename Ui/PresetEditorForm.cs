@@ -292,12 +292,18 @@ public sealed class PresetEditorForm : Form
     /// <summary>Testing: draws the dialog's content into an image without showing it on screen.</summary>
     public static void RenderTo(string path, Settings settings)
     {
-        using var editor = new PresetEditorForm(settings) { StartPosition = FormStartPosition.Manual, Location = new Point(-4000, -4000), ShowInTaskbar = false };
-        editor.CreateControl();
-        editor.PerformLayout();
-        var size = editor.ClientSize;
-        using var bitmap = new Bitmap(size.Width, size.Height);
-        editor.DrawToBitmap(bitmap, new Rectangle(Point.Empty, size));
+        // Child controls only exist once the window is shown, so it is shown far outside the visible screen.
+        using var editor = new PresetEditorForm(settings) { StartPosition = FormStartPosition.Manual, Location = new Point(-8000, -8000) };
+        editor.TopMost = false;
+        editor.Show();
+        for (int i = 0; i < 10; i++) Application.DoEvents();
+        using var whole = new Bitmap(editor.Width, editor.Height);
+        editor.DrawToBitmap(whole, new Rectangle(0, 0, editor.Width, editor.Height));
+        // Keep only the client area; the title bar is drawn by Windows and not captured faithfully.
+        var origin = editor.PointToScreen(Point.Empty);
+        var client = new Rectangle(origin.X - editor.Left, origin.Y - editor.Top, editor.ClientSize.Width, editor.ClientSize.Height);
+        using var bitmap = whole.Clone(client, whole.PixelFormat);
         bitmap.Save(path);
+        editor.Close();
     }
 }
