@@ -22,10 +22,11 @@ internal static class KeyProbe
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hwnd, int id);
 
-    private sealed class Window : NativeWindow
+    private sealed class Window : NativeWindow, IDisposable
     {
         public int Hotkeys;
         public Window() => CreateHandle(new CreateParams());
+        public void Dispose() => DestroyHandle();
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WmHotkey) Hotkeys++;
