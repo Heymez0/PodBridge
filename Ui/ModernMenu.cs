@@ -13,7 +13,7 @@ public static class ModernMenu
     /// <summary>Styles a menu and every submenu in it. Call after the items are added.</summary>
     public static T Apply<T>(T menu) where T : ToolStripDropDownMenu
     {
-        menu.Renderer = Renderer;
+        menu.Renderer = SharedRenderer;
         menu.Font = new Font("Segoe UI", 9f);
         menu.ShowImageMargin = false;
         menu.ShowCheckMargin = menu.Items.OfType<ToolStripMenuItem>().Any(i => i.CheckOnClick || i.Checked);
@@ -30,9 +30,9 @@ public static class ModernMenu
         return menu;
     }
 
-    private static readonly Renderer Renderer = new();
+    private static readonly MenuRenderer SharedRenderer = new();
 
-    private sealed class Renderer : ToolStripRenderer
+    private sealed class MenuRenderer : ToolStripRenderer
     {
         private static Palette P => Theme.Current;
 
