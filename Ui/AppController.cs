@@ -244,7 +244,7 @@ public sealed class AppController : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("Uninstall…", "Kaldır…"), null, (_, _) => Uninstall());
         menu.Items.Add(L.T("Exit", "Çıkış"), null, (_, _) => Quit());
-        return menu;
+        return ModernMenu.Apply(menu);
     }
 
     public void SetLanguage(UiLanguage language)
@@ -271,6 +271,7 @@ public sealed class AppController : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         foreach (ToolStripItem item in BuildStereoItems()) menu.Items.Add(item);
         menu.Closed += (_, _) => _ui.Post(_ => menu.Dispose(), null);
+        ModernMenu.Apply(menu);
         menu.Show(screenLocation);
     }
 
@@ -578,6 +579,20 @@ public sealed class AppController : ApplicationContext
     }
 
     public void ShowPanel() => _flyout.ShowNearTray();
+
+    /// <summary>Testing: writes images of the tray menu and its Language submenu, then removes the tray icon.</summary>
+    public void RenderMenuAndExit(string path)
+    {
+        var menu = BuildMenu();
+        ModernMenu.RenderTo(menu, path);
+        if (menu.Items.OfType<ToolStripMenuItem>().FirstOrDefault(i => i.HasDropDownItems)?.DropDown is ToolStripDropDownMenu sub)
+        {
+            var copy = new ContextMenuStrip();
+            foreach (ToolStripItem item in sub.Items.Cast<ToolStripItem>().ToList()) copy.Items.Add(item);
+            ModernMenu.RenderTo(copy, Path.ChangeExtension(path, null) + "-submenu.png");
+        }
+        _tray.Visible = false;
+    }
 
     /// <summary>Testing: writes an image of the panel to a file and removes the tray icon.</summary>
     public void RenderPanelAndExit(string path)

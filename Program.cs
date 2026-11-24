@@ -45,7 +45,12 @@ internal static class Program
                 settings.StereoRightId = "AA:BB:CC:DD:EE:02";
             }
             L.Current = Option(args, "--language") == "tr" ? UiLanguage.Turkish : UiLanguage.English;
-            new AppController(settings).RenderPanelAndExit(imagePath);
+            if (args.Contains("--light")) Theme.Override = true;
+            if (args.Contains("--dark")) Theme.Override = false;
+            var controller = new AppController(settings);
+            // --menu renders the tray menu (and its Language submenu) instead of the panel.
+            if (args.Contains("--menu")) controller.RenderMenuAndExit(imagePath);
+            else controller.RenderPanelAndExit(imagePath);
             return 0;
         }
         if (Option(args, "--render-osd") is { } osdImage)
@@ -60,18 +65,10 @@ internal static class Program
         {
             ApplicationConfiguration.Initialize();
             L.Current = Option(args, "--language") == "tr" ? UiLanguage.Turkish : UiLanguage.English;
-            using var editor = new PresetEditorForm(new Settings { LowBufferMs = 80 });
-            // Off-screen rendering does not draw the title bar and text boxes faithfully, so show the window briefly and grab the screen.
-            editor.Show();
-            for (int i = 0; i < 20; i++)
-            {
-                Application.DoEvents();
-                Thread.Sleep(25);
-            }
-            using var bitmap = new Bitmap(editor.Width, editor.Height);
-            using (var g = Graphics.FromImage(bitmap)) g.CopyFromScreen(editor.Location, Point.Empty, editor.Size);
-            bitmap.Save(editorImage);
-            editor.Close();
+            if (args.Contains("--light")) Theme.Override = true;
+            if (args.Contains("--dark")) Theme.Override = false;
+            // Drawn off screen; the title bar is not part of the image.
+            PresetEditorForm.RenderTo(editorImage, new Settings { LowBufferMs = 120 });
             return 0;
         }
         if (Option(args, "--write-extension-icons") is { } iconFolder)
