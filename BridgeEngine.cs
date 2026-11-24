@@ -24,6 +24,7 @@ public sealed class BridgeEngine : IDisposable
     private static readonly int[] BackoffSeconds = [1, 2, 4, 8, 15, 30];
     private static readonly TimeSpan BrowseWindow = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MinimumStableUptime = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan RecoveryWindow = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan StatsInterval = TimeSpan.FromSeconds(30);
 
     private readonly Settings _settings;
@@ -99,6 +100,7 @@ public sealed class BridgeEngine : IDisposable
         source.DeviceActive += OnCaptureDevice;
         _source = source;
         int attempt = 0;
+        DateTime lastNetworkDrop = DateTime.MinValue;
         SetState(BridgeState.Connecting);
 
         try
@@ -166,12 +168,16 @@ public sealed class BridgeEngine : IDisposable
                         await session.StopAsync().ConfigureAwait(false);
                         throw;
                     }
-                    if (reason == SessionCloseReason.DeviceClosed && DateTime.UtcNow - startedAt > MinimumStableUptime)
+                    // After a network drop the HomePod still holds the old session for a while and may close the new one
+                    // while it cleans up. That is not another device taking over, so keep retrying in that window.
+                    bool recentDrop = DateTime.UtcNow - lastNetworkDrop < RecoveryWindow;
+                    if (reason == SessionCloseReason.DeviceClosed && DateTime.UtcNow - startedAt > MinimumStableUptime && !recentDrop)
                     {
                         SetState(BridgeState.TakenOver, L.T("The HomePod switched to another device", "HomePod başka bir cihaza geçti"));
                         return;
                     }
-                    Log.Write($"Session dropped: {reason} {closeDetail}");
+                    if (reason != SessionCloseReason.DeviceClosed) lastNetworkDrop = DateTime.UtcNow;
+                    Log.Write($"Session dropped: {reason} {closeDetail}{(recentDrop && reason == SessionCloseReason.DeviceClosed ? " (right after a network drop, retrying)" : "")}");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {

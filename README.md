@@ -268,6 +268,7 @@ PodBridge --write-extension-icons BrowserExtension/icons
 - **Mute key mutes the HomePod** while streaming; the next press or a volume key brings the sound back.
 - **Volume keys control the HomePod even with "Mute computer speakers" off.** Before, the link only worked with that option on.
 - If you stop streaming while the HomePod is muted, its previous volume is restored.
+- After a short Wi-Fi drop, the HomePod sometimes closes the new session while it cleans up the old one. PodBridge took that for another device taking over and gave up; it now keeps reconnecting for a minute after a drop.
 
 ### 2.1.0
 
