@@ -13,7 +13,7 @@
     <Version>2.2.0</Version>
     <Product>PodBridge</Product>
     <Description>Streams Windows audio to HomePod</Description>
-    <!-- Keeps the product version identical across builds (no commit hash), as code signing requires. -->
+    <!-- Keeps the product version identical across builds (no commit hash). -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
